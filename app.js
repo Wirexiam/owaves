@@ -49,7 +49,7 @@ const SOFT_CFG = {
 const AGG_CFG = {
   attack:{ sub:0.30, bass:0.26, lowmid:0.20, mid:0.18, highmid:0.18, treble:0.22 },
   release:{ sub:0.05, bass:0.06, lowmid:0.10, mid:0.10, highmid:0.12, treble:0.14 },
-  ampK(env){ return 0.9 + env.sub*1.5 + env.bass*1.4 + env.rms*0.4; },
+  ampK(env){ /* keep height same as soft */ return 0.75 + env.bass*1.2 + env.rms*0.3; },
   rippleK(env){ return 0.35 + env.highmid*0.8 + env.treble*0.6; },
   kick(env){ return env.sub*0.8 + env.bass*0.6 + env.flux*0.25; },
   xVelBase(i){ return (i+1)*0.03; },
@@ -210,6 +210,7 @@ function clearSoft(fade){
   ctx.fillRect(0,0,W,H);
 }
 
+
 function drawLayer(i, baseY, ampK, rippleK, thickness, xDrift, parallax){
   const color=palette.waves[i%palette.waves.length] || '#fff';
   const width=W, height=H;
@@ -220,15 +221,54 @@ function drawLayer(i, baseY, ampK, rippleK, thickness, xDrift, parallax){
   const noiseMain = NOISES[i] || NOISES[0];
   const noiseRipple = NOISES[prevIdx] || NOISES[0];
 
-  ctx.beginPath();
+  // Precompute points to allow post-processing (sharpen) when AGG is on
+  const xs=new Array(steps);
+  const yOrig=new Array(steps);
+  const dyOrig=new Array(steps);
+
   for(let s=0;s<steps;s++){
     const x=s*dx + xDrift;
     const n=noiseMain(x, tPhase * (1+layers[i].speed*0.18) + parallax);
-    const r=noiseRipple(x*1.18, tPhase*0.72 + i*0.3);
-    const y=baseY +
-      n * layers[i].amp * ampK +
-      r * layers[i].amp * 0.35 * rippleK;
-    if(s===0) ctx.moveTo(x - xDrift, y); else ctx.lineTo(x - xDrift, y);
+
+    // In AGG: add a slightly tighter ripple (higher spatial freq) without raising amplitude
+    const rippleFreq = AGG ? 1.8 : 1.18;
+    const r=noiseRipple(x*rippleFreq, tPhase*0.72 + i*0.3);
+
+    // base (unshaped) value
+    const y0 = baseY + n * layers[i].amp * ampK + r * layers[i].amp * 0.35 * rippleK;
+
+    xs[s]=x - xDrift;
+    yOrig[s]=y0;
+    dyOrig[s]=y0 - baseY;
+  }
+
+  let ys = yOrig.slice();
+
+  if(AGG){
+    // 1) Laplacian sharpen: emphasize curvature (peaks become pointier)
+    const kSharp = 0.55; // amount of sharpening
+    for(let s=1;s<steps-1;s++){
+      const lap = yOrig[s-1] - 2*yOrig[s] + yOrig[s+1];
+      ys[s] = yOrig[s] - kSharp*lap;
+    }
+
+    // 2) Cusp-shaped nonlinearity (without making peaks taller):
+    //    shape dy but clamp by original |dy| to guarantee same peak height
+    for(let s=0;s<steps;s++){
+      const dy0 = dyOrig[s];
+      const sign = dy0>=0 ? 1 : -1;
+      const a = Math.abs(dy0);
+      // cusp shaping: faster rise near peaks, tighter near zero
+      let dy = sign * Math.pow(a, 0.85); // p<1 makes cuspier
+      // 3) clamp to original magnitude => no taller than default
+      if(Math.abs(dy) > a) dy = sign * a;
+      ys[s] = baseY + dy;
+    }
+  }
+
+  ctx.beginPath();
+  for(let s=0;s<steps;s++){
+    if(s===0) ctx.moveTo(xs[s], ys[s]); else ctx.lineTo(xs[s], ys[s]);
   }
 
   ctx.lineTo(width, height);
@@ -240,14 +280,18 @@ function drawLayer(i, baseY, ampK, rippleK, thickness, xDrift, parallax){
   ctx.fillStyle=color;
   ctx.fill();
 
-  ctx.globalAlpha=0.75;
+  // Stroke with different edge aesthetics in AGG
+  ctx.globalAlpha=0.85;
   ctx.strokeStyle=color;
   ctx.lineWidth=thickness;
-  ctx.lineJoin='round'; ctx.lineCap='round';
+  ctx.lineJoin = AGG ? 'miter' : 'round';
+  ctx.miterLimit = AGG ? 12 : 4;
+  ctx.lineCap = AGG ? 'butt' : 'round';
   ctx.stroke();
 
   ctx.globalAlpha=1.0;
 }
+
 
 /* ========= Playback ========= */
 async function setPlayback(paused){
