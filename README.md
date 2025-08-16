@@ -24,7 +24,7 @@
 
 ## Установка и запуск
 Достаточно перейти на сайт:
-https://owaves.netlify.app/
+https://orwaves.netlify.app/
 
 ---
 
