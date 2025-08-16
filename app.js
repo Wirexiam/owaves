@@ -211,17 +211,17 @@ function clearSoft(fade){
 }
 
 
+
 function drawLayer(i, baseY, ampK, rippleK, thickness, xDrift, parallax){
   const color=palette.waves[i%palette.waves.length] || '#fff';
   const width=W, height=H;
-  const steps=96;
+  const steps = AGG ? 80 : 96; // меньше точек => острее углы на полилинии
   const dx=width/(steps-1);
 
   const prevIdx = (i>0? i-1 : 0);
   const noiseMain = NOISES[i] || NOISES[0];
   const noiseRipple = NOISES[prevIdx] || NOISES[0];
 
-  // Precompute points to allow post-processing (sharpen) when AGG is on
   const xs=new Array(steps);
   const yOrig=new Array(steps);
   const dyOrig=new Array(steps);
@@ -230,11 +230,10 @@ function drawLayer(i, baseY, ampK, rippleK, thickness, xDrift, parallax){
     const x=s*dx + xDrift;
     const n=noiseMain(x, tPhase * (1+layers[i].speed*0.18) + parallax);
 
-    // In AGG: add a slightly tighter ripple (higher spatial freq) without raising amplitude
-    const rippleFreq = AGG ? 1.8 : 1.18;
+    // В AGG рябь чуть "чаще", но не сильнее по амплитуде
+    const rippleFreq = AGG ? 1.9 : 1.18;
     const r=noiseRipple(x*rippleFreq, tPhase*0.72 + i*0.3);
 
-    // base (unshaped) value
     const y0 = baseY + n * layers[i].amp * ampK + r * layers[i].amp * 0.35 * rippleK;
 
     xs[s]=x - xDrift;
@@ -245,24 +244,48 @@ function drawLayer(i, baseY, ampK, rippleK, thickness, xDrift, parallax){
   let ys = yOrig.slice();
 
   if(AGG){
-    // 1) Laplacian sharpen: emphasize curvature (peaks become pointier)
-    const kSharp = 0.55; // amount of sharpening
+    // 0) Тонкий "pre-emphasis" на кривизну (легкий лаплас)
+    const kSharp = 0.35;
     for(let s=1;s<steps-1;s++){
       const lap = yOrig[s-1] - 2*yOrig[s] + yOrig[s+1];
       ys[s] = yOrig[s] - kSharp*lap;
     }
 
-    // 2) Cusp-shaped nonlinearity (without making peaks taller):
-    //    shape dy but clamp by original |dy| to guarantee same peak height
+    // 1) Находим локальные экстремумы (смена знака производной)
+    const deriv = new Array(steps).fill(0);
+    for(let s=1;s<steps;s++) deriv[s] = ys[s] - ys[s-1];
+
+    // 2) Сжимаем соседние точки вокруг пиков, чтобы сделать "иглы" (без роста высоты)
+    for(let s=1;s<steps-1;s++){
+      const d1 = deriv[s];
+      const d2 = deriv[s+1];
+      if(d1===0 || d2===0) continue;
+      if(d1>0 && d2<0 || d1<0 && d2>0){ // экстремум в s
+        const dy0 = yOrig[s] - baseY;
+        const sign = dy0>=0 ? 1 : -1;
+        const a = Math.abs(dy0);
+
+        // сохраняем высоту пика
+        ys[s] = baseY + sign * a;
+
+        // сжимаем соседей ближе к базовой линии -> острее вершина
+        const squeezeL = 0.55;
+        const squeezeR = 0.55;
+        ys[s-1] = baseY + (yOrig[s-1]-baseY) * squeezeL;
+        ys[s+1] = baseY + (yOrig[s+1]-baseY) * squeezeR;
+
+        // микро-складка: отодвинем точки s-2 и s+2 чуть к базовой для ещё более узкой "иглы"
+        if(s-2>=0)   ys[s-2] = baseY + (yOrig[s-2]-baseY) * 0.8;
+        if(s+2<steps) ys[s+2] = baseY + (yOrig[s+2]-baseY) * 0.8;
+      }
+    }
+
+    // 3) Жёсткая гарантия "не выше дефолта"
     for(let s=0;s<steps;s++){
-      const dy0 = dyOrig[s];
-      const sign = dy0>=0 ? 1 : -1;
-      const a = Math.abs(dy0);
-      // cusp shaping: faster rise near peaks, tighter near zero
-      let dy = sign * Math.pow(a, 0.85); // p<1 makes cuspier
-      // 3) clamp to original magnitude => no taller than default
-      if(Math.abs(dy) > a) dy = sign * a;
-      ys[s] = baseY + dy;
+      const limit = Math.abs(yOrig[s]-baseY);
+      const diff  = ys[s]-baseY;
+      const capped = Math.sign(diff) * Math.min(Math.abs(diff), limit);
+      ys[s] = baseY + capped;
     }
   }
 
@@ -275,22 +298,24 @@ function drawLayer(i, baseY, ampK, rippleK, thickness, xDrift, parallax){
   ctx.lineTo(0, height);
   ctx.closePath();
 
+  // Fill stays subtle
   ctx.globalCompositeOperation='source-over';
   ctx.globalAlpha=0.10;
   ctx.fillStyle=color;
   ctx.fill();
 
-  // Stroke with different edge aesthetics in AGG
-  ctx.globalAlpha=0.85;
+  // Stroke — делаем тоньше и "острее" в AGG
+  ctx.globalAlpha=0.9;
   ctx.strokeStyle=color;
-  ctx.lineWidth=thickness;
-  ctx.lineJoin = AGG ? 'miter' : 'round';
-  ctx.miterLimit = AGG ? 12 : 4;
-  ctx.lineCap = AGG ? 'butt' : 'round';
+  ctx.lineWidth = AGG ? Math.max(0.8, thickness*0.82) : thickness;
+  ctx.lineJoin  = AGG ? 'miter' : 'round';
+  ctx.miterLimit= AGG ? 18 : 4;
+  ctx.lineCap   = AGG ? 'butt' : 'round';
   ctx.stroke();
 
   ctx.globalAlpha=1.0;
 }
+
 
 
 /* ========= Playback ========= */
