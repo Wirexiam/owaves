@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <title>Organic Waves — аудиореактивные мягкие волны</title>
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="description" content="Медитативные аудиореактивные волны на Canvas: файл/микрофон, пауза, темы, запись видео с аудио (WebM).">
+  <meta name="description" content="Медитативные аудиореактивные волны на Canvas: файл/микрофон, пауза, темы, запись видео с аудио (WebM). Режим Aggressive для басовых треков.">
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='64' height='64'%3E%3Crect width='64' height='64' rx='12' fill='%230b1220'/%3E%3Cpath d='M8 40q12-10 24-10t24 10v12H8z' fill='%23a8ffbf'/%3E%3C/svg%3E">
   <link rel="stylesheet" href="styles.css">
 </head>
@@ -49,6 +49,10 @@
         <label class="pill" for="sens">Чувствительность
           <input id="sens" type="range" min="0.5" max="2.0" step="0.05" value="1.0" aria-label="Чувствительность визуализации">
         </label>
+        <label class="pill" title="Усиленная реакция на басы и транзиенты (кик/снейр/хэты)">
+          <input id="modeAggressive" type="checkbox" aria-label="Aggressive mode">
+          ⚡ Aggressive
+        </label>
         <button class="btn success" id="btnRec" title="Запись видео с аудио">⏺ Запись</button>
         <span class="small" id="status">Нет аудио</span>
       </div>
@@ -57,10 +61,11 @@
     <div class="container">
       <div class="panel">
         <h2 style="margin:0 0 8px">Идея</h2>
-        <p>Несколько полупрозрачных слоёв-волн плавно колышутся. Музыка влияет на: <strong>амплитуду</strong> (бас), <strong>густоту/толщину</strong> (середина) и лёгкую <strong>рябь</strong> (верх). Без резких вспышек — только постепенные переходы. Интерфейс минималистичен и не отвлекает от контента.</p>
+        <p>Несколько полупрозрачных слоёв-волн плавно колышутся. Музыка влияет на: <strong>амплитуду</strong> (бас), <strong>густоту/толщину</strong> (середина) и лёгкую <strong>рябь</strong> (верх). Интерфейс минималистичен и не отвлекает от контента.</p>
         <ul>
           <li><strong>Пуск/Пауза</strong> останавливает и визуал, и аудио (файл/микрофон).</li>
-          <li><strong>Темы</strong>: Calm / Night / Mono — сдержанные палитры.</li>
+          <li><strong>Темы</strong>: Calm / Night / Mono и др.</li>
+          <li><strong>⚡ Aggressive</strong>: режим для басовых треков (бочка, бас-гитара, плотные барабаны).</li>
           <li><strong>Запись</strong>: видео <code>.webm</code> с синхронным аудио из файла/микрофона.</li>
         </ul>
       </div>
@@ -72,22 +77,10 @@
         <ol>
           <li><strong>Загрузите</strong> аудиофайл или включите <strong>Микрофон</strong>. После загрузки файл не запускается автоматически — он стартует ровно при нажатии <strong>⏺ Запись</strong> (с самого начала).</li>
           <li>Нажмите <strong>⏯ Пуск</strong>, если хотите просто посмотреть визуализацию без записи. Для записи — сразу жмите <strong>⏺ Запись</strong>.</li>
-          <li>Выберите <strong>Тему</strong> (Calm, Night, Mono) и подстройте <strong>Чувствительность</strong> ползунком.</li>
+          <li>Выберите <strong>Тему</strong> и при необходимости включите <strong>⚡ Aggressive</strong> — усиливает низы и транзиенты.</li>
           <li>По окончании трека запись <strong>сохранится автоматически</strong>. Для микрофона остановка — вручную (кнопкой «Стоп»).</li>
         </ol>
         <p class="small">Подсказки: <kbd>Space</kbd> — Пуск/Пауза, <kbd>R</kbd> — начать/остановить запись.</p>
-      </div>
-    </div>
-
-    <div class="container">
-      <div class="panel">
-        <h2 style="margin:0 0 8px">Идея и применения</h2>
-        <p>Organic Waves — это спокойная аудиовизуализация для стримов, фонов и арт-видео. Подходит как «дыхание» сцены на фоновых экранах, интро-ролики для соцсетей, визуальные паузы между блоками подкаста, а также расслабляющие фоны для офиса или студии.</p>
-        <ul>
-          <li>Создание <strong>ambient-фонов</strong> для трансляций и events.</li>
-          <li><strong>Луп-ролики</strong> для сторис и клипов.</li>
-          <li><strong>Визуальный метроном</strong> для лайв-сетов — без агрессивных вспышек.</li>
-        </ul>
       </div>
     </div>
 
@@ -111,8 +104,8 @@
         </details>
 
         <details>
-        <summary><strong>Что даёт «Чувствительность»?</strong></summary>
-        <p>Регулирует силу реакции волн на музыку. Для тихих треков — выше, для громких басов — ниже.</p>
+        <summary><strong>Что даёт «Чувствительность» и «Aggressive»?</strong></summary>
+        <p>«Чувствительность» регулирует общую реакцию. «Aggressive» снижает сглаживание и усиливает вклад суббаса/баса и транзиентов.</p>
         </details>
 
         <details>
@@ -126,7 +119,7 @@
   <footer>
     <div class="container row" style="justify-content:space-between">
       <div class="small">© Organic Waves. Canvas + Web Audio API.</div>
-      <div class="small">Файл/Мик • Пауза/Пуск • Темы • Запись (WebM).</div>
+      <div class="small">Файл/Мик • Пауза/Пуск • Темы • Агрессивный режим • Запись (WebM).</div>
     </div>
   </footer>
 </div>

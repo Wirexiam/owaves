@@ -32,6 +32,35 @@ const LSTATE = layers.map(()=>({
   thickness: 1.5
 }));
 
+/* ========= Aggressive Mode ========= */
+let AGG=false;
+const SOFT_CFG = {
+  attack:{ sub:0.25, bass:0.22, lowmid:0.18, mid:0.16, highmid:0.16, treble:0.20 },
+  release:{ sub:0.08, bass:0.10, lowmid:0.12, mid:0.12, highmid:0.14, treble:0.16 },
+  ampK(env){ return 0.75 + env.bass*1.2 + env.rms*0.3; },
+  rippleK(env){ return 0.35 + env.highmid*0.7 + env.treble*0.5; },
+  kick(env){ return env.sub*0.6 + env.bass*0.45 + env.flux*0.15; },
+  xVelBase(i){ return (i+1)*0.02; },
+  xVelKick:0.05,
+  fluxThresh:0.9,
+  swellK:0.12,
+  thicknessTarget(env){ return 1.2 + env.lowmid*0.8 + env.mid*0.6; },
+};
+const AGG_CFG = {
+  attack:{ sub:0.30, bass:0.26, lowmid:0.20, mid:0.18, highmid:0.18, treble:0.22 },
+  release:{ sub:0.05, bass:0.06, lowmid:0.10, mid:0.10, highmid:0.12, treble:0.14 },
+  ampK(env){ return 0.9 + env.sub*1.5 + env.bass*1.4 + env.rms*0.4; },
+  rippleK(env){ return 0.35 + env.highmid*0.8 + env.treble*0.6; },
+  kick(env){ return env.sub*0.8 + env.bass*0.6 + env.flux*0.25; },
+  xVelBase(i){ return (i+1)*0.03; },
+  xVelKick:0.10,
+  fluxThresh:0.8,
+  swellK:0.25,
+  thicknessTarget(env){ return 1.2 + env.lowmid*0.8 + env.mid*0.6 + env.bass*0.4; },
+};
+
+function currentCfg(){ return AGG ? AGG_CFG : SOFT_CFG; }
+
 /* ========= Audio ========= */
 let AC=null, analyser=null, timeAnalyser=null, dataArray=null, gain=null, srcNode=null, mediaStream=null, usingMic=false, activeAudio=null;
 let destNode=null;
@@ -127,12 +156,14 @@ function analyze(){
   timeAnalyser.getByteTimeDomainData(tbuf);
   let rms=0; for(let k=0;k<tbuf.length;k++){ const x=(tbuf[k]-128)/128; rms += x*x; } rms = Math.sqrt(rms/tbuf.length);
 
-  AENV.sub     = envFollow(AENV.sub,     norm(subB),   0.25, 0.08);
-  AENV.bass    = envFollow(AENV.bass,    norm(bassB),  0.22, 0.10);
-  AENV.lowmid  = envFollow(AENV.lowmid,  norm(lowmB),  0.18, 0.12);
-  AENV.mid     = envFollow(AENV.mid,     norm(midB),   0.16, 0.12);
-  AENV.highmid = envFollow(AENV.highmid, norm(highmB), 0.16, 0.14);
-  AENV.treble  = envFollow(AENV.treble,  norm(trebB),  0.20, 0.16);
+  const cfg = currentCfg();
+
+  AENV.sub     = envFollow(AENV.sub,     norm(subB),   cfg.attack.sub,  cfg.release.sub);
+  AENV.bass    = envFollow(AENV.bass,    norm(bassB),  cfg.attack.bass, cfg.release.bass);
+  AENV.lowmid  = envFollow(AENV.lowmid,  norm(lowmB),  cfg.attack.lowmid, cfg.release.lowmid);
+  AENV.mid     = envFollow(AENV.mid,     norm(midB),   cfg.attack.mid,  cfg.release.mid);
+  AENV.highmid = envFollow(AENV.highmid, norm(highmB), cfg.attack.highmid, cfg.release.highmid);
+  AENV.treble  = envFollow(AENV.treble,  norm(trebB),  cfg.attack.treble, cfg.release.treble);
 
   const fluxN = Math.min(2.0, flux/800 * sens);
   const centN = centroidIdx / n;
@@ -281,6 +312,7 @@ function tick(){
   if(!running){ cancelAnimationFrame(rafId); return; }
 
   const env = analyze();
+  const cfg = currentCfg();
 
   const baseFade = (document.getElementById('app').dataset.theme==='mono') ? 0.085 : 0.065;
   const fade = clamp(baseFade * (0.9 + env.sub*0.4 + env.bass*0.3) - swell*0.03, 0.02, 0.16);
@@ -295,21 +327,21 @@ function tick(){
   });
 
   LSTATE.forEach((ls, i)=>{
-    const kick = env.sub*0.6 + env.bass*0.45 + env.flux*0.15;
-    ls.xVel += ( (i+1)*0.02 + kick*0.05 ) * (i%2===0 ? 1 : -1);
+    const kick = cfg.kick(env);
+    ls.xVel += ( cfg.xVelBase(i) + kick*cfg.xVelKick ) * (i%2===0 ? 1 : -1);
     ls.xVel *= 0.90;
     ls.xDrift += ls.xVel;
   });
 
   LSTATE.forEach((ls)=>{
-    const tTarget = 1.2 + env.lowmid*0.8 + env.mid*0.6;
+    const tTarget = cfg.thicknessTarget(env);
     ls.thickness = ls.thickness + (tTarget - ls.thickness)*0.12;
   });
 
-  const ampK    = 0.75 + env.bass*1.2 + env.rms*0.3;
-  const rippleK = 0.35 + env.highmid*0.7 + env.treble*0.5;
+  const ampK    = cfg.ampK(env);
+  const rippleK = cfg.rippleK(env);
 
-  if(env.flux > 0.9) triggerSwell((env.flux-0.9)*0.12);
+  if(env.flux > cfg.fluxThresh) triggerSwell((env.flux-cfg.fluxThresh)*cfg.swellK);
   swell *= 0.94;
 
   const baseY = H/2;
@@ -435,8 +467,6 @@ function stopRecording(){
   }
 }
 
-
-
 /* === HUD spacer === */
 function updateHudSpace(){
   const hud = document.querySelector('.hud');
@@ -456,9 +486,23 @@ function updateHudSpace(){
     setTheme(saved);
   } else setTheme('calm');
 
+  // Aggressive mode restore
+  const savedAgg = localStorage.getItem('ow_aggressive');
+  AGG = savedAgg === '1';
+  const aggInput = document.getElementById('modeAggressive');
+  if (aggInput){ aggInput.checked = AGG; }
+
   document.querySelectorAll('input[name="theme"]').forEach(r=>{
     r.addEventListener('change', e=> setTheme(e.target.value));
   });
+
+  if (aggInput){
+    aggInput.addEventListener('change', (e)=>{
+      AGG = !!e.target.checked;
+      localStorage.setItem('ow_aggressive', AGG ? '1' : '0');
+      setStatus(AGG ? 'Aggressive: включен' : 'Aggressive: выключен');
+    });
+  }
 
   const seedFromHash = () => {
     const h=location.hash.replace(/^#/,'').trim();
