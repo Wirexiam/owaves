@@ -31,6 +31,12 @@ const LSTATE = layers.map(()=>({
   parallax: 0,
   thickness: 1.5
 }));
+/* ========= Rock Oscillator State ========= */
+const ROCK_OSC = layers.map((_,i)=>({
+  y:0, v:0, phase:0
+}));
+let prevEnvVals = {bass:0, sub:0, flux:0};
+
 
 /* ========= Styles (architectures) ========= */
 let STYLE = 'pop'; // 'pop' | 'rock'
@@ -56,23 +62,30 @@ const POP_CFG = {
 
 // Rock: другая архитектура — остро, «кусп», локальный сжим, edge jitter.
 // Амплитуда не увеличивается относительно Pop.
+
 const ROCK_CFG = {
   attack:{ sub:0.30, bass:0.26, lowmid:0.20, mid:0.18, highmid:0.18, treble:0.22 },
   release:{ sub:0.05, bass:0.06, lowmid:0.10, mid:0.10, highmid:0.12, treble:0.14 },
-  ampK(env){ return 0.75 + env.bass*1.2 + env.rms*0.3; }, // та же высота
-  rippleK(env){ return 0.35 + env.highmid*0.8 + env.treble*0.6; },
-  kick(env){ return env.sub*0.8 + env.bass*0.6 + env.flux*0.25; },
+  ampK(env){ return 0.75 + env.bass*1.2 + env.rms*0.3; }, // та же высота, что у Pop
+  rippleK(env){ return 0.35 + env.highmid*0.7 + env.treble*0.55; },
+  kick(env){ return env.sub*0.65 + env.bass*0.55 + env.flux*0.25; },
   xVelBase(i){ return (i+1)*0.03; },
-  xVelKick:0.10,
-  fluxThresh:0.8,
-  swellK:0.22,
-  thicknessTarget(env){ return 1.2 + env.lowmid*0.7 + env.mid*0.5 + env.bass*0.3; },
-  steps: 64, // меньше точек => геометрически острее углы
+  xVelKick:0.08,
+  fluxThresh:0.82,
+  swellK:0.20,
+  thicknessTarget(env){ return 1.15 + env.lowmid*0.7 + env.mid*0.5 + env.bass*0.25; },
+  steps: 80,
   strokeJoin: 'miter',
   strokeCap: 'butt',
-  strokeThinK: 0.85, // чуть тоньше штрих
-  rippleFreq: 1.9,
+  strokeThinK: 0.9,
+  rippleFreq: 1.35,
+  // Параметры осциллятора
+  kxBase: 0.020,              // пространственная частота по X
+  w0:    [9.0, 11.0, 13.5, 16.0], // собств. частота для слоёв (рад/с в наших условных ед.)
+  zeta:  [0.28,0.24,0.20,0.18],   // демпфирование (чуть меньше впереди)
+  drive: { flux: 1.1, bassJerk: 0.9, sub: 0.6 } // вклад силового воздействия
 };
+
 
 function CFG(){ return STYLE==='rock' ? ROCK_CFG : POP_CFG; }
 
@@ -268,6 +281,7 @@ function drawLayerPop(i, baseY, ampK, rippleK, thickness, xDrift, parallax){
   ctx.globalAlpha=1.0;
 }
 
+
 function drawLayerRock(i, baseY, ampK, rippleK, thickness, xDrift, parallax){
   const color=palette.waves[i%palette.waves.length] || '#fff';
   const width=W, height=H;
@@ -279,58 +293,41 @@ function drawLayerRock(i, baseY, ampK, rippleK, thickness, xDrift, parallax){
   const noiseMain = NOISES[i] || NOISES[0];
   const noiseRipple = NOISES[prevIdx] || NOISES[0];
 
+  // 1) Базовая мягкая линия (высота как у Pop)
   const xs=new Array(steps);
-  const yOrig=new Array(steps);
-
-  // Базовый гладкий профиль (та же высота, что у Pop)
+  const yBase=new Array(steps);
   for(let s=0;s<steps;s++){
     const x=s*dx + xDrift;
     const n=noiseMain(x, tPhase * (1+layers[i].speed*0.18) + parallax);
     const r=noiseRipple(x*cfg.rippleFreq, tPhase*0.72 + i*0.3);
-    const y0 = baseY + n * layers[i].amp * ampK + r * layers[i].amp * 0.35 * rippleK;
+    const y0 = baseY + n * layers[i].amp * ampK + r * layers[i].amp * 0.30 * rippleK;
     xs[s]=x - xDrift;
-    yOrig[s]=y0;
+    yBase[s]=y0;
   }
 
-  let ys = yOrig.slice();
+  // 2) Осциллирующий «звон» вокруг базы — управляется физикой
+  const osc = ROCK_OSC[i];
+  const kx = cfg.kxBase*(1 + i*0.18); // чаще у «передних» слоёв
+  const envHigh = (AENV.highmid*0.7 + AENV.treble*0.9 + AENV.flux*0.5);
+  const envWindow = (s)=>{ // затухание к краям
+    const t=s/(steps-1);
+    return Math.sin(Math.PI*t)**0.9;
+  };
 
-  // Extremum squeeze: делаем «иглы» (не повышая высоту)
-  const deriv = new Array(steps).fill(0);
-  for(let s=1;s<steps;s++) deriv[s] = yOrig[s] - yOrig[s-1];
+  const ys = new Array(steps);
+  for(let s=0;s<steps;s++){
+    const oscX = Math.sin(kx*xs[s] + osc.phase);                 // осцилляция вдоль X
+    const envAmp = envWindow(s) * (0.6 + 0.4*envHigh);            // локальная громкость «звона»
+    let ring = osc.y * oscX * envAmp;
 
-  for(let s=1;s<steps-1;s++){
-    const d1 = deriv[s], d2 = deriv[s+1];
-    if(d1===0 || d2===0) continue;
-    if((d1>0 && d2<0) || (d1<0 && d2>0)){ // экстремум
-      const peak = yOrig[s];
-      const sign = (peak>=baseY)?1:-1;
-      const a = Math.abs(peak-baseY);
+    // Жёсткий лимит: не выше базовой по модулю
+    const limit = Math.abs(yBase[s]-baseY) * 0.95;
+    if(Math.abs(ring) > limit) ring = Math.sign(ring)*limit;
 
-      ys[s] = baseY + sign*a; // сохраняем высоту
-      const k1=0.45, k2=0.75; // чем меньше k1 — тем «острее»
-      ys[s-1] = baseY + (yOrig[s-1]-baseY)*k1;
-      ys[s+1] = baseY + (yOrig[s+1]-baseY)*k1;
-      if(s-2>=0)   ys[s-2] = baseY + (yOrig[s-2]-baseY)*k2;
-      if(s+2<steps) ys[s+2] = baseY + (yOrig[s+2]-baseY)*k2;
-    }
+    ys[s] = yBase[s] + ring;
   }
 
-  // Edge jitter: мелкая «зубчатость» от ВЧ + flux (без роста высоты)
-  const envHigh = (AENV.highmid*0.7 + AENV.treble*0.9 + AENV.flux*0.6);
-  const jitterPx = clamp(envHigh*6.0, 0.0, 6.0); // максимум ~6px до клампа
-  for(let s=1;s<steps-1;s++){
-    const tnorm = s/steps;
-    const r = rngFrom(tPhase*6.3 + i*0.77 + tnorm*3.1) - 0.5; // [-0.5..0.5]
-    let yj = ys[s] + r * jitterPx;
-
-    // Жёсткий лимит: не выше базового профиля по модулю
-    const lim = Math.abs(yOrig[s]-baseY);
-    const diff = yj - baseY;
-    yj = baseY + Math.sign(diff) * Math.min(Math.abs(diff), lim);
-    ys[s] = yj;
-  }
-
-  // Рисуем
+  // Рендер
   ctx.beginPath();
   for(let s=0;s<steps;s++){
     if(s===0) ctx.moveTo(xs[s], ys[s]); else ctx.lineTo(xs[s], ys[s]);
@@ -344,13 +341,14 @@ function drawLayerRock(i, baseY, ampK, rippleK, thickness, xDrift, parallax){
   ctx.fillStyle=color;
   ctx.fill();
 
-  ctx.globalAlpha=0.9;
+  ctx.globalAlpha=0.92;
   ctx.strokeStyle=color;
   ctx.lineWidth=thickness * cfg.strokeThinK;
   ctx.lineJoin=cfg.strokeJoin;
-  ctx.miterLimit=18;
+  ctx.miterLimit=22;
   ctx.lineCap=cfg.strokeCap;
   ctx.stroke();
+
   ctx.globalAlpha=1.0;
 }
 
@@ -361,6 +359,7 @@ function drawLayer(i, baseY, ampK, rippleK, thickness, xDrift, parallax){
     drawLayerPop(i, baseY, ampK, rippleK, thickness, xDrift, parallax);
   }
 }
+
 
 /* ========= Playback ========= */
 async function setPlayback(paused){
@@ -421,6 +420,7 @@ function triggerSwell(amount){ swell = Math.min(1.0, swell + amount); }
 
 /* ========= Main loop ========= */
 let rafId=0;
+
 function tick(){
   if(!running){ cancelAnimationFrame(rafId); return; }
 
@@ -434,13 +434,40 @@ function tick(){
   const speed = 0.55 + env.mid*0.55 + env.centroid*0.35;
   tPhase += 0.006 * speed;
 
-  // Parallax одинаковый, но в rock он ощущается резче из-за меньшего steps и шейпинга
+  // === Rock oscillator physics ===
+  const dt = 0.016 * (0.9 + speed*0.4); // условный шаг времени
+  if(STYLE==='rock'){
+    for(let i=0;i<ROCK_OSC.length;i++){
+      const osc = ROCK_OSC[i];
+      const w0 = ROCK_CFG.w0[i] || ROCK_CFG.w0[ROCK_CFG.w0.length-1];
+      const z  = ROCK_CFG.zeta[i] || ROCK_CFG.zeta[ROCK_CFG.zeta.length-1];
+      // Возбуждение: flux + производная баса/суббаса
+      const bassJerk = Math.max(0, env.bass - prevEnvVals.bass) + Math.max(0, env.sub - prevEnvVals.sub);
+      const F = ROCK_CFG.drive.flux*env.flux + ROCK_CFG.drive.bassJerk*bassJerk + ROCK_CFG.drive.sub*env.sub;
+
+      // y'' + 2ζω y' + ω² y = F(t)
+      const a = F - 2*z*w0*osc.v - (w0*w0)*osc.y;
+      osc.v += a * dt;
+      osc.y += osc.v * dt;
+
+      // мягкая стабилизация амплитуды (чтобы не разгонялось)
+      const maxAmp = 40; // px в логике before-clamp, реальный вклад ограничивается дальше
+      if(osc.y >  maxAmp) osc.y =  maxAmp;
+      if(osc.y < -maxAmp) osc.y = -maxAmp;
+
+      // фаза для пространственного паттерна
+      osc.phase += dt * (0.8 + i*0.15 + env.centroid*0.5);
+    }
+    prevEnvVals = { bass: env.bass, sub: env.sub, flux: env.flux };
+  }
+
+  // Parallax одинаковый, но в rock ощущается резче
   LSTATE.forEach((ls, i)=>{
     const targetParallax = (i-1.5)*0.12 * (0.3 + env.centroid*0.9);
     ls.parallax = ls.parallax + (targetParallax - ls.parallax)*0.08;
   });
 
-  // Движение слоёв: в rock отзывчивее и «нервнее»
+  // Движение слоёв
   LSTATE.forEach((ls, i)=>{
     const kick = cfg.kick(env);
     ls.xVel += ( cfg.xVelBase(i) + kick*cfg.xVelKick ) * (i%2===0 ? 1 : -1);
@@ -454,7 +481,7 @@ function tick(){
     ls.thickness = ls.thickness + (tTarget - ls.thickness)*0.12;
   });
 
-  const ampK    = cfg.ampK(env);     // одинаковая высота для Pop/Rock
+  const ampK    = cfg.ampK(env); // одинаковая высота
   const rippleK = cfg.rippleK(env);
 
   if(env.flux > cfg.fluxThresh) triggerSwell((env.flux-cfg.fluxThresh)*cfg.swellK);
@@ -468,6 +495,7 @@ function tick(){
 
   rafId=requestAnimationFrame(tick);
 }
+
 
 /* ========= Recording (Canvas + Audio, with auto-stop) ========= */
 let canvasStream=null;
