@@ -37,55 +37,80 @@ const ROCK_OSC = layers.map((_,i)=>({
 }));
 let prevEnvVals = {bass:0, sub:0, flux:0};
 
-
 /* ========= Styles (architectures) ========= */
 let STYLE = 'pop'; // 'pop' | 'rock'
 
-// Pop: исходная мягкая архитектура (округлые вершины).
+// Pop: мягкий профиль, округлые вершины, волны активнее по X.
+// Высота: бас + RMS + мягкий вклад от кика/снейра.
 const POP_CFG = {
   attack:{ sub:0.25, bass:0.22, lowmid:0.18, mid:0.16, highmid:0.16, treble:0.20 },
   release:{ sub:0.08, bass:0.10, lowmid:0.12, mid:0.12, highmid:0.14, treble:0.16 },
-  ampK(env){ return 0.75 + env.bass*1.2 + env.rms*0.3; },
-  rippleK(env){ return 0.35 + env.highmid*0.7 + env.treble*0.5; },
-  kick(env){ return env.sub*0.6 + env.bass*0.45 + env.flux*0.15; },
-  xVelBase(i){ return (i+1)*0.02; },
-  xVelKick:0.05,
-  fluxThresh:0.9,
+
+  // базовый масштаб по вертикали
+  ampK(env){ return 0.80 + env.bass*1.25 + env.rms*0.35; },
+
+  // лёгкое «шуршание» от верхов
+  rippleK(env){ return 0.35 + env.highmid*0.70 + env.treble*0.55; },
+
+  // вклад кика в горизонтальную скорость (для бодрости)
+  kick(env){ return env.sub*0.55 + env.bass*0.45 + env.flux*0.18; },
+
+  // базовая горизонтальная скорость слоёв
+  xVelBase(i){ return (i+1)*0.020; },
+  xVelKick:0.050,
+
+  // общий «лифт» высоты от событий (бас + транзиенты)
+  eventLift(env){ return 0.35*env.bass + 0.55*AENV.kick + 0.30*AENV.snare; },
+
+  // адаптивная толщина
+  thicknessTarget(env){ return 1.20 + env.lowmid*0.80 + env.mid*0.60; },
+
+  // параметры рендеринга
+  fluxThresh:0.90,
   swellK:0.12,
-  thicknessTarget(env){ return 1.2 + env.lowmid*0.8 + env.mid*0.6; },
   steps: 96,
   strokeJoin: 'round',
   strokeCap: 'round',
   strokeThinK: 1.0,
-  rippleFreq: 1.18,
+  rippleFreq: 1.18
 };
 
-// Rock: другая архитектура — остро, «кусп», локальный сжим, edge jitter.
-// Амплитуда не увеличивается относительно Pop.
-
+// Rock: «ленивый» X, очень чувствительная вертикаль, острые пики.
 const ROCK_CFG = {
   attack:{ sub:0.30, bass:0.26, lowmid:0.20, mid:0.18, highmid:0.18, treble:0.22 },
   release:{ sub:0.05, bass:0.06, lowmid:0.10, mid:0.10, highmid:0.12, treble:0.14 },
-  ampK(env){ return 0.75 + env.bass*1.2 + env.rms*0.3; }, // та же высота, что у Pop
-  rippleK(env){ return 0.35 + env.highmid*0.7 + env.treble*0.55; },
-  kick(env){ return env.sub*0.65 + env.bass*0.55 + env.flux*0.25; },
-  xVelBase(i){ return (i+1)*0.03; },
-  xVelKick:0.08,
+
+  // базовая высота (как у Pop), «события» усилят ниже в tick()
+  ampK(env){ return 0.80 + env.bass*1.25 + env.rms*0.35; },
+
+  rippleK(env){ return 0.38 + env.highmid*0.75 + env.treble*0.60; },
+
+  // почти не разгоняемся от удара по X
+  kick(env){ return env.sub*0.30 + env.bass*0.25 + env.flux*0.12; },
+
+  // «ленивая» горизонталь
+  xVelBase(i){ return (i+1)*0.0045; },
+  xVelKick:0.012,
+
+  // агрессивный вертикальный лифт от баса/ударов
+  eventLift(env){ return 0.45*env.bass + 0.90*AENV.kick + 0.75*AENV.snare; },
+
+  thicknessTarget(env){ return 1.15 + env.lowmid*0.70 + env.mid*0.50 + env.bass*0.25; },
+
   fluxThresh:0.82,
   swellK:0.20,
-  thicknessTarget(env){ return 1.15 + env.lowmid*0.7 + env.mid*0.5 + env.bass*0.25; },
   steps: 80,
   strokeJoin: 'miter',
   strokeCap: 'butt',
   strokeThinK: 0.9,
   rippleFreq: 1.35,
-  // Параметры осциллятора
-  kxBase: 0.020,              // пространственная частота по X
-  w0:    [9.0, 11.0, 13.5, 16.0], // собств. частота для слоёв (рад/с в наших условных ед.)
-  zeta:  [0.28,0.24,0.20,0.18],   // демпфирование (чуть меньше впереди)
-  drive: { flux: 1.1, bassJerk: 0.9, sub: 0.6 } // вклад силового воздействия
-};
 
+  // физика «звонка»
+  kxBase: 0.020,
+  w0:    [9.0, 11.0, 13.5, 16.0],
+  zeta:  [0.28, 0.24, 0.20, 0.18],
+  drive: { flux: 1.1, bassJerk: 0.9, sub: 0.6, snare: 1.1 }
+};
 
 function CFG(){ return STYLE==='rock' ? ROCK_CFG : POP_CFG; }
 
@@ -147,8 +172,13 @@ async function useMic(){
 function stopMic(){ if(mediaStream){ for(const t of mediaStream.getTracks()) t.stop(); mediaStream=null; } }
 
 /* ========= Analysis ========= */
-const AENV = { sub:0, bass:0, lowmid:0, mid:0, highmid:0, treble:0, flux:0, centroid:0, rolloff:0, rms:0 };
+const AENV = {
+  sub:0, bass:0, lowmid:0, mid:0, highmid:0, treble:0,
+  flux:0, centroid:0, rolloff:0, rms:0,
+  kick:0, snare:0
+};
 const prevSpec = { buf:null };
+const prevBands = { kick:0, snare:0 };
 function idxFor(freq, sr, n){ const nyq=sr/2; return Math.max(0, Math.min(n-1, Math.round(freq/nyq*n))); }
 function avg(a,l,r){ let s=0,c=0; for(let i=l;i<=r;i++){ s+=a[i]; c++; } return c?s/c:0; }
 function envFollow(prev,val,attack,release){ return (val>prev) ? prev + (val-prev)*attack : prev + (val-prev)*release; }
@@ -167,7 +197,29 @@ function analyze(){
   const highmB = avg(dataArray, i(1200), i(3000));
   const trebB  = avg(dataArray, i(3000), i(8000));
 
+  // чувствительность нужна и для кика/снейра, и для нормировок ниже
   const sens = parseFloat(document.getElementById('sens').value || '1.0');
+
+  // --- Banded transients ---
+  const rawKick  = avg(dataArray, i(40),   i(120));   // кик
+  const rawSnare = avg(dataArray, i(1500), i(4000));  // снейр
+
+  // Положительная разность кадр-к-кадру (полосной spectral flux)
+  const dKick  = Math.max(0, rawKick  - prevBands.kick);
+  const dSnare = Math.max(0, rawSnare - prevBands.snare);
+
+  // Нормировка и сглаживание
+  const kKick  = Math.min(1.0, (dKick  * sens) / 25);
+  const kSnare = Math.min(1.0, (dSnare * sens) / 18);
+
+  // Быстрый attack, медленный release: «удар» → хвост
+  AENV.kick  = envFollow(AENV.kick,  kKick,  0.65, 0.25);
+  AENV.snare = envFollow(AENV.snare, kSnare, 0.70, 0.30);
+
+  // запоминаем для следующего кадра
+  prevBands.kick  = rawKick;
+  prevBands.snare = rawSnare;
+
   const norm = v => Math.min(1.8, (v * sens) / 140);
 
   let flux = 0;
@@ -281,7 +333,6 @@ function drawLayerPop(i, baseY, ampK, rippleK, thickness, xDrift, parallax){
   ctx.globalAlpha=1.0;
 }
 
-
 function drawLayerRock(i, baseY, ampK, rippleK, thickness, xDrift, parallax){
   const color=palette.waves[i%palette.waves.length] || '#fff';
   const width=W, height=H;
@@ -308,23 +359,23 @@ function drawLayerRock(i, baseY, ampK, rippleK, thickness, xDrift, parallax){
   // 2) Осциллирующий «звон» вокруг базы — управляется физикой
   const osc = ROCK_OSC[i];
   const kx = cfg.kxBase*(1 + i*0.18); // чаще у «передних» слоёв
-  const envHigh = (AENV.highmid*0.7 + AENV.treble*0.9 + AENV.flux*0.5);
-  const envWindow = (s)=>{ // затухание к краям
-    const t=s/(steps-1);
-    return Math.sin(Math.PI*t)**0.9;
-  };
 
   const ys = new Array(steps);
-  for(let s=0;s<steps;s++){
-    const oscX = Math.sin(kx*xs[s] + osc.phase);                 // осцилляция вдоль X
-    const envAmp = envWindow(s) * (0.6 + 0.4*envHigh);            // локальная громкость «звона»
-    let ring = osc.y * oscX * envAmp;
+  for (let s=0; s<steps; s++){
+    const oscX   = Math.sin(kx*xs[s] + osc.phase);
+    const envHi  = (AENV.highmid*0.7 + AENV.treble*0.9 + AENV.flux*0.5);
+    const hit    = (0.8*AENV.kick + 1.2*AENV.snare);
+    const w      = Math.sin(Math.PI*s/(steps-1))**0.9;
+    let ring     = osc.y * oscX * w * (0.55 + 0.45*envHi + 0.75*hit);
 
-    // Жёсткий лимит: не выше базовой по модулю
-    const limit = Math.abs(yBase[s]-baseY) * 0.95;
-    if(Math.abs(ring) > limit) ring = Math.sign(ring)*limit;
+    const limit  = Math.abs(yBase[s]-baseY)*0.95;
+    if (Math.abs(ring) > limit) ring = Math.sign(ring)*limit;
 
-    ys[s] = yBase[s] + ring;
+    const yRaw   = yBase[s] + ring;
+    const sign   = Math.sign(yRaw - baseY) || 1;
+    const sharp  = 0.78 - 0.18*Math.min(1, AENV.snare + 0.5*AENV.treble); // снейр острит
+    const mag    = Math.pow(Math.abs(yRaw - baseY), sharp);
+    ys[s]        = baseY + sign*mag;
   }
 
   // Рендер
@@ -359,7 +410,6 @@ function drawLayer(i, baseY, ampK, rippleK, thickness, xDrift, parallax){
     drawLayerPop(i, baseY, ampK, rippleK, thickness, xDrift, parallax);
   }
 }
-
 
 /* ========= Playback ========= */
 async function setPlayback(paused){
@@ -441,9 +491,12 @@ function tick(){
       const osc = ROCK_OSC[i];
       const w0 = ROCK_CFG.w0[i] || ROCK_CFG.w0[ROCK_CFG.w0.length-1];
       const z  = ROCK_CFG.zeta[i] || ROCK_CFG.zeta[ROCK_CFG.zeta.length-1];
-      // Возбуждение: flux + производная баса/суббаса
+      // Возбуждение: flux + производная баса/суббаса + снейр
       const bassJerk = Math.max(0, env.bass - prevEnvVals.bass) + Math.max(0, env.sub - prevEnvVals.sub);
-      const F = ROCK_CFG.drive.flux*env.flux + ROCK_CFG.drive.bassJerk*bassJerk + ROCK_CFG.drive.sub*env.sub;
+      const F = ROCK_CFG.drive.flux*env.flux
+              + ROCK_CFG.drive.bassJerk*bassJerk
+              + ROCK_CFG.drive.sub*env.sub
+              + ROCK_CFG.drive.snare*AENV.snare;
 
       // y'' + 2ζω y' + ω² y = F(t)
       const a = F - 2*z*w0*osc.v - (w0*w0)*osc.y;
@@ -451,7 +504,7 @@ function tick(){
       osc.y += osc.v * dt;
 
       // мягкая стабилизация амплитуды (чтобы не разгонялось)
-      const maxAmp = 40; // px в логике before-clamp, реальный вклад ограничивается дальше
+      const maxAmp = 65; // больше вертикальная амплитуда
       if(osc.y >  maxAmp) osc.y =  maxAmp;
       if(osc.y < -maxAmp) osc.y = -maxAmp;
 
@@ -467,11 +520,12 @@ function tick(){
     ls.parallax = ls.parallax + (targetParallax - ls.parallax)*0.08;
   });
 
-  // Движение слоёв
+  // Движение слоёв (горизонталь)
   LSTATE.forEach((ls, i)=>{
-    const kick = cfg.kick(env);
-    ls.xVel += ( cfg.xVelBase(i) + kick*cfg.xVelKick ) * (i%2===0 ? 1 : -1);
-    ls.xVel *= 0.90;
+    const kick = CFG().kick ? CFG().kick(AENV) : 0.0;
+    ls.xVel += ( CFG().xVelBase(i) + kick*CFG().xVelKick ) * (i%2===0 ? 1 : -1);
+    const friction = (STYLE==='rock') ? 0.82 : 0.90; // Rock ленивее
+    ls.xVel *= friction;
     ls.xDrift += ls.xVel;
   });
 
@@ -481,8 +535,12 @@ function tick(){
     ls.thickness = ls.thickness + (tTarget - ls.thickness)*0.12;
   });
 
-  const ampK    = cfg.ampK(env); // одинаковая высота
-  const rippleK = cfg.rippleK(env);
+  // Вертикальный масштаб с учётом событий (бас/кик/снейр)
+  const baseAmpK  = CFG().ampK(AENV);
+  const eventLift = CFG().eventLift ? CFG().eventLift(AENV) : 0.0;
+  // Rock сильнее реагирует по вертикали
+  const ampK = baseAmpK * (1 + (STYLE==='rock' ? 0.65 : 0.40) * clamp(eventLift, 0, 1.5));
+  const rippleK = CFG().rippleK(AENV);
 
   if(env.flux > cfg.fluxThresh) triggerSwell((env.flux-cfg.fluxThresh)*cfg.swellK);
   swell *= 0.94;
@@ -495,7 +553,6 @@ function tick(){
 
   rafId=requestAnimationFrame(tick);
 }
-
 
 /* ========= Recording (Canvas + Audio, with auto-stop) ========= */
 let canvasStream=null;
