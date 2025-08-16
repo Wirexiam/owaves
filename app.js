@@ -324,8 +324,7 @@ function tick(){
 /* ========= Recording (Canvas + Audio, with auto-stop) ========= */
 let canvasStream=null;
 let recorder=null, recChunks=[], recActive=false;
-let recTimeoutId = null;
-let autoStopCleanup = null;
+// ВАЖНО: НЕ объявляем recTimeoutId/autoStopCleanup здесь — они уже объявлены выше!
 
 function getSupportedMime(){
   const options=[
@@ -340,10 +339,8 @@ function getSupportedMime(){
 }
 
 function getCombinedStream(){
-  // Видео из canvas (30 FPS)
-  if (!canvasStream) canvasStream = canvas.captureStream(30);
-  // Аудио из AudioContext -> destNode.stream
-  const audioStream = destNode?.stream;
+  if (!canvasStream) canvasStream = canvas.captureStream(30); // видео 30 FPS
+  const audioStream = destNode?.stream;                       // аудио из AC
   const tracks = [
     ...canvasStream.getTracks(),
     ...(audioStream ? audioStream.getTracks() : [])
@@ -367,26 +364,26 @@ function armAutoStopFromMedia(media){
     media.removeEventListener('emptied', onEmptied);
   };
 }
+
 function clearAutoStopGuards(){
   if (recTimeoutId){ clearTimeout(recTimeoutId); recTimeoutId=null; }
   if (autoStopCleanup){ try{ autoStopCleanup(); }catch{} autoStopCleanup=null; }
 }
 
 async function startRecording(){
-  await ensurePlayingAudio();              // готовим аудиоконтекст/микрофон
+  await ensurePlayingAudio();
   if(!destNode){ setupAudio(); }
 
   const mime = getSupportedMime();
   const stream = getCombinedStream();
 
-  // Если источник — файл: стартуем СТРОГО тут, автостоп по окончанию
+  // если источник — HTMLAudioElement: автостоп по концу трека
   if (activeAudio instanceof HTMLMediaElement){
     try{ await waitForMetadata(activeAudio); }catch{}
-    activeAudio.loop = false;              // временно убираем луп
-    activeAudio.currentTime = 0;           // пишем «с нуля»
+    activeAudio.loop = false;
+    activeAudio.currentTime = 0;
     armAutoStopFromMedia(activeAudio);
 
-    // страховка по длительности
     if (isFinite(activeAudio.duration) && activeAudio.duration > 0){
       const remainingMs = Math.max(0, (activeAudio.duration - activeAudio.currentTime) * 1000);
       recTimeoutId = setTimeout(()=> stopRecording(), remainingMs + 350);
@@ -413,14 +410,12 @@ async function startRecording(){
     a.download = `organic_waves_${new Date().toISOString().replace(/[:.]/g,'-')}.webm`;
     document.body.appendChild(a); a.click(); a.remove();
     URL.revokeObjectURL(url);
-
     if (activeAudio instanceof HTMLMediaElement){ activeAudio.loop = true; }
     setStatus('Запись сохранена');
   };
 
-  // Важно: сначала стартуем рекордер, затем play(), чтобы не потерять первые кадры/сэмплы
+  // порядок критичен: сперва recorder.start(), потом .play()
   recorder.start();
-
   if (activeAudio instanceof HTMLMediaElement){
     try{ await activeAudio.play(); }catch(e){ console.warn(e); }
   }
@@ -432,7 +427,6 @@ async function startRecording(){
 
 function stopRecording(){
   clearAutoStopGuards();
-
   if (recorder && recActive){
     recActive=false;
     try{ recorder.stop(); }catch(e){ console.warn(e); }
