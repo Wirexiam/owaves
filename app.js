@@ -32,9 +32,11 @@ const LSTATE = layers.map(()=>({
   thickness: 1.5
 }));
 
-/* ========= Aggressive Mode ========= */
-let AGG=false;
-const SOFT_CFG = {
+/* ========= Styles (architectures) ========= */
+let STYLE = 'pop'; // 'pop' | 'rock'
+
+// Pop: исходная мягкая архитектура (округлые вершины).
+const POP_CFG = {
   attack:{ sub:0.25, bass:0.22, lowmid:0.18, mid:0.16, highmid:0.16, treble:0.20 },
   release:{ sub:0.08, bass:0.10, lowmid:0.12, mid:0.12, highmid:0.14, treble:0.16 },
   ampK(env){ return 0.75 + env.bass*1.2 + env.rms*0.3; },
@@ -45,21 +47,34 @@ const SOFT_CFG = {
   fluxThresh:0.9,
   swellK:0.12,
   thicknessTarget(env){ return 1.2 + env.lowmid*0.8 + env.mid*0.6; },
+  steps: 96,
+  strokeJoin: 'round',
+  strokeCap: 'round',
+  strokeThinK: 1.0,
+  rippleFreq: 1.18,
 };
-const AGG_CFG = {
+
+// Rock: другая архитектура — остро, «кусп», локальный сжим, edge jitter.
+// Амплитуда не увеличивается относительно Pop.
+const ROCK_CFG = {
   attack:{ sub:0.30, bass:0.26, lowmid:0.20, mid:0.18, highmid:0.18, treble:0.22 },
   release:{ sub:0.05, bass:0.06, lowmid:0.10, mid:0.10, highmid:0.12, treble:0.14 },
-  ampK(env){ /* keep height same as soft */ return 0.75 + env.bass*1.2 + env.rms*0.3; },
+  ampK(env){ return 0.75 + env.bass*1.2 + env.rms*0.3; }, // та же высота
   rippleK(env){ return 0.35 + env.highmid*0.8 + env.treble*0.6; },
   kick(env){ return env.sub*0.8 + env.bass*0.6 + env.flux*0.25; },
   xVelBase(i){ return (i+1)*0.03; },
   xVelKick:0.10,
   fluxThresh:0.8,
-  swellK:0.25,
-  thicknessTarget(env){ return 1.2 + env.lowmid*0.8 + env.mid*0.6 + env.bass*0.4; },
+  swellK:0.22,
+  thicknessTarget(env){ return 1.2 + env.lowmid*0.7 + env.mid*0.5 + env.bass*0.3; },
+  steps: 64, // меньше точек => геометрически острее углы
+  strokeJoin: 'miter',
+  strokeCap: 'butt',
+  strokeThinK: 0.85, // чуть тоньше штрих
+  rippleFreq: 1.9,
 };
 
-function currentCfg(){ return AGG ? AGG_CFG : SOFT_CFG; }
+function CFG(){ return STYLE==='rock' ? ROCK_CFG : POP_CFG; }
 
 /* ========= Audio ========= */
 let AC=null, analyser=null, timeAnalyser=null, dataArray=null, gain=null, srcNode=null, mediaStream=null, usingMic=false, activeAudio=null;
@@ -156,7 +171,7 @@ function analyze(){
   timeAnalyser.getByteTimeDomainData(tbuf);
   let rms=0; for(let k=0;k<tbuf.length;k++){ const x=(tbuf[k]-128)/128; rms += x*x; } rms = Math.sqrt(rms/tbuf.length);
 
-  const cfg = currentCfg();
+  const cfg = CFG();
 
   AENV.sub     = envFollow(AENV.sub,     norm(subB),   cfg.attack.sub,  cfg.release.sub);
   AENV.bass    = envFollow(AENV.bass,    norm(bassB),  cfg.attack.bass, cfg.release.bass);
@@ -195,6 +210,12 @@ function makeNoise1D(rand){
 }
 let NOISES=[];
 
+/* ========= Rendering utilities ========= */
+function rngFrom(x){ // детерминированный "шум" для edge jitter
+  const s = Math.sin(x*12.9898 + 78.233) * 43758.5453;
+  return s - Math.floor(s);
+}
+
 /* ========= Rendering ========= */
 function resize(){
   const r=canvas.getBoundingClientRect();
@@ -210,12 +231,48 @@ function clearSoft(fade){
   ctx.fillRect(0,0,W,H);
 }
 
-
-
-function drawLayer(i, baseY, ampK, rippleK, thickness, xDrift, parallax){
+function drawLayerPop(i, baseY, ampK, rippleK, thickness, xDrift, parallax){
   const color=palette.waves[i%palette.waves.length] || '#fff';
   const width=W, height=H;
-  const steps = AGG ? 80 : 96; // меньше точек => острее углы на полилинии
+  const cfg=POP_CFG;
+  const steps=cfg.steps;
+  const dx=width/(steps-1);
+
+  const prevIdx = (i>0? i-1 : 0);
+  const noiseMain = NOISES[i] || NOISES[0];
+  const noiseRipple = NOISES[prevIdx] || NOISES[0];
+
+  ctx.beginPath();
+  for(let s=0;s<steps;s++){
+    const x=s*dx + xDrift;
+    const n=noiseMain(x, tPhase * (1+layers[i].speed*0.18) + parallax);
+    const r=noiseRipple(x*cfg.rippleFreq, tPhase*0.72 + i*0.3);
+    const y=baseY + n * layers[i].amp * ampK + r * layers[i].amp * 0.35 * rippleK;
+    if(s===0) ctx.moveTo(x - xDrift, y); else ctx.lineTo(x - xDrift, y);
+  }
+
+  ctx.lineTo(width, height);
+  ctx.lineTo(0, height);
+  ctx.closePath();
+
+  ctx.globalCompositeOperation='source-over';
+  ctx.globalAlpha=0.10;
+  ctx.fillStyle=color;
+  ctx.fill();
+
+  ctx.globalAlpha=0.75;
+  ctx.strokeStyle=color;
+  ctx.lineWidth=thickness * cfg.strokeThinK;
+  ctx.lineJoin=cfg.strokeJoin; ctx.lineCap=cfg.strokeCap;
+  ctx.stroke();
+  ctx.globalAlpha=1.0;
+}
+
+function drawLayerRock(i, baseY, ampK, rippleK, thickness, xDrift, parallax){
+  const color=palette.waves[i%palette.waves.length] || '#fff';
+  const width=W, height=H;
+  const cfg=ROCK_CFG;
+  const steps=cfg.steps;
   const dx=width/(steps-1);
 
   const prevIdx = (i>0? i-1 : 0);
@@ -224,99 +281,86 @@ function drawLayer(i, baseY, ampK, rippleK, thickness, xDrift, parallax){
 
   const xs=new Array(steps);
   const yOrig=new Array(steps);
-  const dyOrig=new Array(steps);
 
+  // Базовый гладкий профиль (та же высота, что у Pop)
   for(let s=0;s<steps;s++){
     const x=s*dx + xDrift;
     const n=noiseMain(x, tPhase * (1+layers[i].speed*0.18) + parallax);
-
-    // В AGG рябь чуть "чаще", но не сильнее по амплитуде
-    const rippleFreq = AGG ? 1.9 : 1.18;
-    const r=noiseRipple(x*rippleFreq, tPhase*0.72 + i*0.3);
-
+    const r=noiseRipple(x*cfg.rippleFreq, tPhase*0.72 + i*0.3);
     const y0 = baseY + n * layers[i].amp * ampK + r * layers[i].amp * 0.35 * rippleK;
-
     xs[s]=x - xDrift;
     yOrig[s]=y0;
-    dyOrig[s]=y0 - baseY;
   }
 
   let ys = yOrig.slice();
 
-  if(AGG){
-    // 0) Тонкий "pre-emphasis" на кривизну (легкий лаплас)
-    const kSharp = 0.35;
-    for(let s=1;s<steps-1;s++){
-      const lap = yOrig[s-1] - 2*yOrig[s] + yOrig[s+1];
-      ys[s] = yOrig[s] - kSharp*lap;
-    }
+  // Extremum squeeze: делаем «иглы» (не повышая высоту)
+  const deriv = new Array(steps).fill(0);
+  for(let s=1;s<steps;s++) deriv[s] = yOrig[s] - yOrig[s-1];
 
-    // 1) Находим локальные экстремумы (смена знака производной)
-    const deriv = new Array(steps).fill(0);
-    for(let s=1;s<steps;s++) deriv[s] = ys[s] - ys[s-1];
+  for(let s=1;s<steps-1;s++){
+    const d1 = deriv[s], d2 = deriv[s+1];
+    if(d1===0 || d2===0) continue;
+    if((d1>0 && d2<0) || (d1<0 && d2>0)){ // экстремум
+      const peak = yOrig[s];
+      const sign = (peak>=baseY)?1:-1;
+      const a = Math.abs(peak-baseY);
 
-    // 2) Сжимаем соседние точки вокруг пиков, чтобы сделать "иглы" (без роста высоты)
-    for(let s=1;s<steps-1;s++){
-      const d1 = deriv[s];
-      const d2 = deriv[s+1];
-      if(d1===0 || d2===0) continue;
-      if(d1>0 && d2<0 || d1<0 && d2>0){ // экстремум в s
-        const dy0 = yOrig[s] - baseY;
-        const sign = dy0>=0 ? 1 : -1;
-        const a = Math.abs(dy0);
-
-        // сохраняем высоту пика
-        ys[s] = baseY + sign * a;
-
-        // сжимаем соседей ближе к базовой линии -> острее вершина
-        const squeezeL = 0.55;
-        const squeezeR = 0.55;
-        ys[s-1] = baseY + (yOrig[s-1]-baseY) * squeezeL;
-        ys[s+1] = baseY + (yOrig[s+1]-baseY) * squeezeR;
-
-        // микро-складка: отодвинем точки s-2 и s+2 чуть к базовой для ещё более узкой "иглы"
-        if(s-2>=0)   ys[s-2] = baseY + (yOrig[s-2]-baseY) * 0.8;
-        if(s+2<steps) ys[s+2] = baseY + (yOrig[s+2]-baseY) * 0.8;
-      }
-    }
-
-    // 3) Жёсткая гарантия "не выше дефолта"
-    for(let s=0;s<steps;s++){
-      const limit = Math.abs(yOrig[s]-baseY);
-      const diff  = ys[s]-baseY;
-      const capped = Math.sign(diff) * Math.min(Math.abs(diff), limit);
-      ys[s] = baseY + capped;
+      ys[s] = baseY + sign*a; // сохраняем высоту
+      const k1=0.45, k2=0.75; // чем меньше k1 — тем «острее»
+      ys[s-1] = baseY + (yOrig[s-1]-baseY)*k1;
+      ys[s+1] = baseY + (yOrig[s+1]-baseY)*k1;
+      if(s-2>=0)   ys[s-2] = baseY + (yOrig[s-2]-baseY)*k2;
+      if(s+2<steps) ys[s+2] = baseY + (yOrig[s+2]-baseY)*k2;
     }
   }
 
+  // Edge jitter: мелкая «зубчатость» от ВЧ + flux (без роста высоты)
+  const envHigh = (AENV.highmid*0.7 + AENV.treble*0.9 + AENV.flux*0.6);
+  const jitterPx = clamp(envHigh*6.0, 0.0, 6.0); // максимум ~6px до клампа
+  for(let s=1;s<steps-1;s++){
+    const tnorm = s/steps;
+    const r = rngFrom(tPhase*6.3 + i*0.77 + tnorm*3.1) - 0.5; // [-0.5..0.5]
+    let yj = ys[s] + r * jitterPx;
+
+    // Жёсткий лимит: не выше базового профиля по модулю
+    const lim = Math.abs(yOrig[s]-baseY);
+    const diff = yj - baseY;
+    yj = baseY + Math.sign(diff) * Math.min(Math.abs(diff), lim);
+    ys[s] = yj;
+  }
+
+  // Рисуем
   ctx.beginPath();
   for(let s=0;s<steps;s++){
     if(s===0) ctx.moveTo(xs[s], ys[s]); else ctx.lineTo(xs[s], ys[s]);
   }
-
   ctx.lineTo(width, height);
   ctx.lineTo(0, height);
   ctx.closePath();
 
-  // Fill stays subtle
   ctx.globalCompositeOperation='source-over';
   ctx.globalAlpha=0.10;
   ctx.fillStyle=color;
   ctx.fill();
 
-  // Stroke — делаем тоньше и "острее" в AGG
   ctx.globalAlpha=0.9;
   ctx.strokeStyle=color;
-  ctx.lineWidth = AGG ? Math.max(0.8, thickness*0.82) : thickness;
-  ctx.lineJoin  = AGG ? 'miter' : 'round';
-  ctx.miterLimit= AGG ? 18 : 4;
-  ctx.lineCap   = AGG ? 'butt' : 'round';
+  ctx.lineWidth=thickness * cfg.strokeThinK;
+  ctx.lineJoin=cfg.strokeJoin;
+  ctx.miterLimit=18;
+  ctx.lineCap=cfg.strokeCap;
   ctx.stroke();
-
   ctx.globalAlpha=1.0;
 }
 
-
+function drawLayer(i, baseY, ampK, rippleK, thickness, xDrift, parallax){
+  if(STYLE==='rock'){
+    drawLayerRock(i, baseY, ampK, rippleK, thickness, xDrift, parallax);
+  }else{
+    drawLayerPop(i, baseY, ampK, rippleK, thickness, xDrift, parallax);
+  }
+}
 
 /* ========= Playback ========= */
 async function setPlayback(paused){
@@ -381,7 +425,7 @@ function tick(){
   if(!running){ cancelAnimationFrame(rafId); return; }
 
   const env = analyze();
-  const cfg = currentCfg();
+  const cfg = CFG();
 
   const baseFade = (document.getElementById('app').dataset.theme==='mono') ? 0.085 : 0.065;
   const fade = clamp(baseFade * (0.9 + env.sub*0.4 + env.bass*0.3) - swell*0.03, 0.02, 0.16);
@@ -390,11 +434,13 @@ function tick(){
   const speed = 0.55 + env.mid*0.55 + env.centroid*0.35;
   tPhase += 0.006 * speed;
 
+  // Parallax одинаковый, но в rock он ощущается резче из-за меньшего steps и шейпинга
   LSTATE.forEach((ls, i)=>{
     const targetParallax = (i-1.5)*0.12 * (0.3 + env.centroid*0.9);
     ls.parallax = ls.parallax + (targetParallax - ls.parallax)*0.08;
   });
 
+  // Движение слоёв: в rock отзывчивее и «нервнее»
   LSTATE.forEach((ls, i)=>{
     const kick = cfg.kick(env);
     ls.xVel += ( cfg.xVelBase(i) + kick*cfg.xVelKick ) * (i%2===0 ? 1 : -1);
@@ -402,12 +448,13 @@ function tick(){
     ls.xDrift += ls.xVel;
   });
 
+  // Толщина линий
   LSTATE.forEach((ls)=>{
     const tTarget = cfg.thicknessTarget(env);
     ls.thickness = ls.thickness + (tTarget - ls.thickness)*0.12;
   });
 
-  const ampK    = cfg.ampK(env);
+  const ampK    = cfg.ampK(env);     // одинаковая высота для Pop/Rock
   const rippleK = cfg.rippleK(env);
 
   if(env.flux > cfg.fluxThresh) triggerSwell((env.flux-cfg.fluxThresh)*cfg.swellK);
@@ -425,7 +472,6 @@ function tick(){
 /* ========= Recording (Canvas + Audio, with auto-stop) ========= */
 let canvasStream=null;
 let recorder=null, recChunks=[], recActive=false;
-// ВАЖНО: НЕ объявляем recTimeoutId/autoStopCleanup здесь — они уже объявлены выше!
 
 function getSupportedMime(){
   const options=[
@@ -478,7 +524,6 @@ async function startRecording(){
   const mime = getSupportedMime();
   const stream = getCombinedStream();
 
-  // если источник — HTMLAudioElement: автостоп по концу трека
   if (activeAudio instanceof HTMLMediaElement){
     try{ await waitForMetadata(activeAudio); }catch{}
     activeAudio.loop = false;
@@ -515,7 +560,6 @@ async function startRecording(){
     setStatus('Запись сохранена');
   };
 
-  // порядок критичен: сперва recorder.start(), потом .play()
   recorder.start();
   if (activeAudio instanceof HTMLMediaElement){
     try{ await activeAudio.play(); }catch(e){ console.warn(e); }
@@ -549,29 +593,27 @@ function updateHudSpace(){
   ctx=canvas.getContext('2d', { alpha:false });
   resize(); window.addEventListener('resize', resize);
 
-  const saved=localStorage.getItem('organic_waves_theme');
-  if(saved){
-    document.querySelector(`input[name="theme"][value="${saved}"]`)?.setAttribute('checked','checked');
-    setTheme(saved);
+  const savedTheme=localStorage.getItem('organic_waves_theme');
+  if(savedTheme){
+    document.querySelector(`input[name="theme"][value="${savedTheme}"]`)?.setAttribute('checked','checked');
+    setTheme(savedTheme);
   } else setTheme('calm');
 
-  // Aggressive mode restore
-  const savedAgg = localStorage.getItem('ow_aggressive');
-  AGG = savedAgg === '1';
-  const aggInput = document.getElementById('modeAggressive');
-  if (aggInput){ aggInput.checked = AGG; }
+  const savedStyle = localStorage.getItem('ow_style');
+  STYLE = (savedStyle==='rock'||savedStyle==='pop') ? savedStyle : 'pop';
+  const styleInput = document.querySelector(`input[name="style"][value="${STYLE}"]`);
+  if(styleInput) styleInput.checked = true;
 
   document.querySelectorAll('input[name="theme"]').forEach(r=>{
     r.addEventListener('change', e=> setTheme(e.target.value));
   });
-
-  if (aggInput){
-    aggInput.addEventListener('change', (e)=>{
-      AGG = !!e.target.checked;
-      localStorage.setItem('ow_aggressive', AGG ? '1' : '0');
-      setStatus(AGG ? 'Aggressive: включен' : 'Aggressive: выключен');
+  document.querySelectorAll('input[name="style"]').forEach(r=>{
+    r.addEventListener('change', e=>{
+      STYLE = e.target.value;
+      localStorage.setItem('ow_style', STYLE);
+      setStatus(STYLE==='rock' ? 'Стиль: Rock' : 'Стиль: Pop');
     });
-  }
+  });
 
   const seedFromHash = () => {
     const h=location.hash.replace(/^#/,'').trim();
