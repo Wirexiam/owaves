@@ -321,42 +321,126 @@ function tick(){
   rafId=requestAnimationFrame(tick);
 }
 
-/* ========= Recording ========= */
-let rec=null, recChunks=[], recActive=false;
+/* ========= Recording (Canvas + Audio, with auto-stop) ========= */
+let canvasStream=null;
+let recorder=null, recChunks=[], recActive=false;
+let recTimeoutId = null;
+let autoStopCleanup = null;
+
+function getSupportedMime(){
+  const options=[
+    'video/webm;codecs=vp9,opus',
+    'video/webm;codecs=vp8,opus',
+    'video/webm;codecs=vp9',
+    'video/webm;codecs=vp8',
+    'video/webm'
+  ];
+  for (const m of options){ if (MediaRecorder.isTypeSupported(m)) return m; }
+  return '';
+}
+
+function getCombinedStream(){
+  // Видео из canvas (30 FPS)
+  if (!canvasStream) canvasStream = canvas.captureStream(30);
+  // Аудио из AudioContext -> destNode.stream
+  const audioStream = destNode?.stream;
+  const tracks = [
+    ...canvasStream.getTracks(),
+    ...(audioStream ? audioStream.getTracks() : [])
+  ];
+  return new MediaStream(tracks);
+}
+
+function waitForMetadata(media){
+  if (media.readyState >= 1) return Promise.resolve();
+  return new Promise(res => media.addEventListener('loadedmetadata', res, { once:true }));
+}
+
+function armAutoStopFromMedia(media){
+  if (autoStopCleanup) { try{ autoStopCleanup(); }catch{} autoStopCleanup=null; }
+  const onEnded = () => { stopRecording(); };
+  const onEmptied = () => { stopRecording(); };
+  media.addEventListener('ended', onEnded,   { once:true });
+  media.addEventListener('emptied', onEmptied, { once:true });
+  autoStopCleanup = () => {
+    media.removeEventListener('ended', onEnded);
+    media.removeEventListener('emptied', onEmptied);
+  };
+}
+function clearAutoStopGuards(){
+  if (recTimeoutId){ clearTimeout(recTimeoutId); recTimeoutId=null; }
+  if (autoStopCleanup){ try{ autoStopCleanup(); }catch{} autoStopCleanup=null; }
+}
 
 async function startRecording(){
-  if(!destNode){ setStatus('Нет аудио для записи'); return; }
-  try{
-    rec = new MediaRecorder(destNode.stream, { mimeType: 'video/webm;codecs=vp9,opus' });
-  }catch(e){
-    rec = new MediaRecorder(destNode.stream);
+  await ensurePlayingAudio();              // готовим аудиоконтекст/микрофон
+  if(!destNode){ setupAudio(); }
+
+  const mime = getSupportedMime();
+  const stream = getCombinedStream();
+
+  // Если источник — файл: стартуем СТРОГО тут, автостоп по окончанию
+  if (activeAudio instanceof HTMLMediaElement){
+    try{ await waitForMetadata(activeAudio); }catch{}
+    activeAudio.loop = false;              // временно убираем луп
+    activeAudio.currentTime = 0;           // пишем «с нуля»
+    armAutoStopFromMedia(activeAudio);
+
+    // страховка по длительности
+    if (isFinite(activeAudio.duration) && activeAudio.duration > 0){
+      const remainingMs = Math.max(0, (activeAudio.duration - activeAudio.currentTime) * 1000);
+      recTimeoutId = setTimeout(()=> stopRecording(), remainingMs + 350);
+    }
   }
+
   recChunks=[];
-  rec.ondataavailable = e=>{ if(e.data.size>0) recChunks.push(e.data); };
-  rec.onstop = ()=>{
-    const blob = new Blob(recChunks, { type: rec.mimeType });
+  try{
+    recorder = new MediaRecorder(stream, mime ? { mimeType: mime } : {});
+  }catch(e){
+    setStatus('MediaRecorder не поддерживается');
+    console.error(e);
+    clearAutoStopGuards();
+    return;
+  }
+
+  recorder.ondataavailable = e=>{ if(e.data.size>0) recChunks.push(e.data); };
+  recorder.onstop = ()=>{
+    const type = mime || 'video/webm';
+    const blob = new Blob(recChunks, { type });
     const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `organic_waves_${new Date().toISOString().replace(/[:.]/g,'-')}.webm`;
+    document.body.appendChild(a); a.click(); a.remove();
+    URL.revokeObjectURL(url);
 
-    // создаём ссылку для скачивания mp4/webm
-    const a=document.createElement('a');
-    a.href=url;
-    a.download='recording.webm';
-    a.click();
-
+    if (activeAudio instanceof HTMLMediaElement){ activeAudio.loop = true; }
     setStatus('Запись сохранена');
-    recActive=false;
-    document.getElementById('btnRec').textContent='⏺ Запись';
   };
 
-  rec.start();
+  // Важно: сначала стартуем рекордер, затем play(), чтобы не потерять первые кадры/сэмплы
+  recorder.start();
+
+  if (activeAudio instanceof HTMLMediaElement){
+    try{ await activeAudio.play(); }catch(e){ console.warn(e); }
+  }
+
   recActive=true;
-  document.getElementById('btnRec').textContent='⏹ Стоп';
-  setStatus('Запись начата');
+  document.getElementById('btnRec').textContent='■ Стоп';
+  setStatus('Запись идёт…');
 }
 
 function stopRecording(){
-  if(rec && rec.state!=='inactive'){ rec.stop(); }
+  clearAutoStopGuards();
+
+  if (recorder && recActive){
+    recActive=false;
+    try{ recorder.stop(); }catch(e){ console.warn(e); }
+    document.getElementById('btnRec').textContent='⏺ Запись';
+    setStatus('Запись сохраняется…');
+  }
 }
+
 
 
 /* === HUD spacer === */
