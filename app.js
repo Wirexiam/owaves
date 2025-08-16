@@ -75,6 +75,7 @@ const POP_CFG = {
   rippleFreq: 1.18
 };
 
+
 // Rock: «ленивый» X, очень чувствительная вертикаль, острые пики.
 const ROCK_CFG = {
   attack:{ sub:0.30, bass:0.26, lowmid:0.20, mid:0.18, highmid:0.18, treble:0.22 },
@@ -111,6 +112,7 @@ const ROCK_CFG = {
   zeta:  [0.28, 0.24, 0.20, 0.18],
   drive: { flux: 1.1, bassJerk: 0.9, sub: 0.6, snare: 1.1 }
 };
+
 
 function CFG(){ return STYLE==='rock' ? ROCK_CFG : POP_CFG; }
 
@@ -198,7 +200,7 @@ function analyze(){
   const trebB  = avg(dataArray, i(3000), i(8000));
 
   // чувствительность нужна и для кика/снейра, и для нормировок ниже
-  const sens = parseFloat(document.getElementById('sens').value || '1.0');
+  const sens = parseFloat(document.getElementById('sens')?.value || '1.0');
 
   // --- Banded transients ---
   const rawKick  = avg(dataArray, i(40),   i(120));   // кик
@@ -333,6 +335,7 @@ function drawLayerPop(i, baseY, ampK, rippleK, thickness, xDrift, parallax){
   ctx.globalAlpha=1.0;
 }
 
+
 function drawLayerRock(i, baseY, ampK, rippleK, thickness, xDrift, parallax){
   const color=palette.waves[i%palette.waves.length] || '#fff';
   const width=W, height=H;
@@ -410,6 +413,7 @@ function drawLayer(i, baseY, ampK, rippleK, thickness, xDrift, parallax){
     drawLayerPop(i, baseY, ampK, rippleK, thickness, xDrift, parallax);
   }
 }
+
 
 /* ========= Playback ========= */
 async function setPlayback(paused){
@@ -554,25 +558,41 @@ function tick(){
   rafId=requestAnimationFrame(tick);
 }
 
-/* ========= Recording (Canvas + Audio, with auto-stop) ========= */
+
+/* ========= Recording (Canvas + Audio) ========= */
 let canvasStream=null;
 let recorder=null, recChunks=[], recActive=false;
+let wakeLock = null;
+let recMimeUsed = '';
+let ffmpegReady = false;
+let ffmpegInstance = null;
 
+// Wake Lock для стабильной записи (не даём устройству уйти в сон)
+async function acquireWakeLock(){
+  try{ if ('wakeLock' in navigator) wakeLock = await navigator.wakeLock.request('screen'); }
+  catch(e){ /* ignore */ }
+}
+function releaseWakeLock(){ try{ wakeLock?.release(); }catch{} wakeLock=null; }
+
+// Выбираем кодек (пытаемся MP4, иначе WebM)
 function getSupportedMime(){
   const options=[
+    'video/mp4;codecs=avc1.42E01E,mp4a.40.2',
+    'video/mp4',
     'video/webm;codecs=vp9,opus',
     'video/webm;codecs=vp8,opus',
     'video/webm;codecs=vp9',
     'video/webm;codecs=vp8',
     'video/webm'
   ];
-  for (const m of options){ if (MediaRecorder.isTypeSupported(m)) return m; }
-  return '';
+  for (const m of options){ if (window.MediaRecorder && MediaRecorder.isTypeSupported(m)) return m; }
+  return ''; // пусть решит сам конструктор
 }
 
+// Захватываем 60 FPS для более ровной записи
 function getCombinedStream(){
-  if (!canvasStream) canvasStream = canvas.captureStream(30); // видео 30 FPS
-  const audioStream = destNode?.stream;                       // аудио из AC
+  if (!canvasStream) canvasStream = canvas.captureStream(60);
+  const audioStream = destNode?.stream;
   const tracks = [
     ...canvasStream.getTracks(),
     ...(audioStream ? audioStream.getTracks() : [])
@@ -602,11 +622,52 @@ function clearAutoStopGuards(){
   if (autoStopCleanup){ try{ autoStopCleanup(); }catch{} autoStopCleanup=null; }
 }
 
+// === ffmpeg.wasm: загрузка и конвертация WebM -> MP4 ===
+async function ensureFFmpeg(){
+  if (ffmpegReady) return ffmpegInstance;
+  setStatus('Загрузка движка конвертации…');
+  const mod = await import('https://unpkg.com/@ffmpeg/ffmpeg@0.12.7/dist/ffmpeg.min.js');
+  const { createFFmpeg, fetchFile } = mod;
+  const ffmpeg = createFFmpeg({
+    log: false,
+    corePath: 'https://unpkg.com/@ffmpeg/core@0.12.7/dist/ffmpeg-core.js',
+    progress: p => {
+      if (p && typeof p.ratio === 'number'){
+        const pct = Math.min(100, Math.max(0, Math.round(p.ratio*100)));
+        setStatus(`Конвертация в MP4… ${pct}%`);
+      }
+    }
+  });
+  await ffmpeg.load();
+  ffmpegReady = true;
+  ffmpegInstance = { ffmpeg, fetchFile };
+  return ffmpegInstance;
+}
+
+async function webmToMp4(webmBlob){
+  const { ffmpeg, fetchFile } = await ensureFFmpeg();
+  const data = await fetchFile(webmBlob);
+  ffmpeg.FS('writeFile', 'input.webm', data);
+  await ffmpeg.run(
+    '-i','input.webm',
+    '-c:v','libx264','-preset','veryfast','-crf','21',
+    '-c:a','aac','-b:a','160k',
+    'output.mp4'
+  );
+  const out = ffmpeg.FS('readFile','output.mp4');
+  ffmpeg.FS('unlink','input.webm');
+  ffmpeg.FS('unlink','output.mp4');
+  return new Blob([out.buffer], { type: 'video/mp4' });
+}
+
+// === API записи ===
 async function startRecording(){
   await ensurePlayingAudio();
+  await acquireWakeLock();
   if(!destNode){ setupAudio(); }
 
   const mime = getSupportedMime();
+  recMimeUsed = mime || '';
   const stream = getCombinedStream();
 
   if (activeAudio instanceof HTMLMediaElement){
@@ -622,30 +683,60 @@ async function startRecording(){
   }
 
   recChunks=[];
+  const mrOpts = {};
+  if (mime) mrOpts.mimeType = mime;
+  // Явные битрейты => меньше «качелей» у энкодера
+  mrOpts.videoBitsPerSecond = 6_000_000; // 6 Mbps video
+  mrOpts.audioBitsPerSecond =   160_000; // 160 kbps audio
+
   try{
-    recorder = new MediaRecorder(stream, mime ? { mimeType: mime } : {});
+    recorder = new MediaRecorder(stream, mrOpts);
   }catch(e){
     setStatus('MediaRecorder не поддерживается');
     console.error(e);
     clearAutoStopGuards();
+    releaseWakeLock();
     return;
   }
 
-  recorder.ondataavailable = e=>{ if(e.data.size>0) recChunks.push(e.data); };
-  recorder.onstop = ()=>{
-    const type = mime || 'video/webm';
-    const blob = new Blob(recChunks, { type });
-    const url = URL.createObjectURL(blob);
+  recorder.ondataavailable = e=>{ if(e.data && e.data.size>0) recChunks.push(e.data); };
+  recorder.onerror = (ev)=>{ console.error('MediaRecorder error', ev?.error || ev); setStatus('Ошибка записи'); };
+  recorder.onwarning = (ev)=>{ console.warn('MediaRecorder warning', ev); };
+
+  recorder.onstop = async ()=>{
+    const chosenType = recMimeUsed || 'video/webm';
+    const rawBlob = new Blob(recChunks, { type: chosenType });
+
+    // Если браузер дал MP4 — сохраняем как есть. Иначе конвертируем в MP4.
+    let finalBlob = rawBlob;
+    let ext = 'mp4';
+    if (!chosenType.includes('mp4')){
+      try{
+        finalBlob = await webmToMp4(rawBlob);
+      }catch(e){
+        console.error(e);
+        // На крайний случай — чтобы не потерять запись, сохраним исходник
+        finalBlob = rawBlob;
+        ext = 'webm';
+        setStatus('Конвертация не удалась — сохранён WebM.');
+      }
+    }
+
+    const url = URL.createObjectURL(finalBlob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = `organic_waves_${new Date().toISOString().replace(/[:.]/g,'-')}.webm`;
+    a.download = `organic_waves_${new Date().toISOString().replace(/[:.]/g,'-')}.${ext}`;
     document.body.appendChild(a); a.click(); a.remove();
     URL.revokeObjectURL(url);
+
     if (activeAudio instanceof HTMLMediaElement){ activeAudio.loop = true; }
-    setStatus('Запись сохранена');
+    setStatus(`Запись сохранена (${ext.toUpperCase()})`);
+    releaseWakeLock();
   };
 
-  recorder.start();
+  // КРИТИЧНО: отдаём чанки раз в секунду — без этого бывают «тихие подвисания»
+  recorder.start(1000);
+
   if (activeAudio instanceof HTMLMediaElement){
     try{ await activeAudio.play(); }catch(e){ console.warn(e); }
   }
