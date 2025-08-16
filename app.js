@@ -25,16 +25,16 @@ const layers = [
 ];
 let tPhase=0;
 
-/* Per-layer state for «танец» */
+/* Per-layer state */
 const LSTATE = layers.map(()=>({
   xDrift: 0, xVel: 0,
   parallax: 0,
   thickness: 1.5
 }));
 
-/* ========= Web Audio ========= */
+/* ========= Audio ========= */
 let AC=null, analyser=null, timeAnalyser=null, dataArray=null, gain=null, srcNode=null, mediaStream=null, usingMic=false, activeAudio=null;
-let destNode=null; // MediaStreamDestination для записи аудио
+let destNode=null;
 let recTimeoutId = null;
 let autoStopCleanup = null;
 
@@ -46,10 +46,7 @@ function setupAudio(){
   if(!destNode){ destNode = AC.createMediaStreamDestination(); }
   if(!dataArray) dataArray=new Uint8Array(analyser.frequencyBinCount);
 
-  // src -> gain -> analyser -> destination
-  //                 \-> timeAnalyser
-  //                 \-> destNode (в запись)
-  try{ gain.disconnect(); }catch{}            // безопасно пересобираем тракт
+  try{ gain.disconnect(); }catch{}
   gain.connect(analyser);
   analyser.connect(AC.destination);
   gain.connect(timeAnalyser);
@@ -71,13 +68,13 @@ function useFile(file){
   audio.src=URL.createObjectURL(file);
   audio.crossOrigin="anonymous";
   audio.loop=true;
-  audio.autoplay=false;              // не автозапускаем
-  audio.preload='metadata';          // чтобы была duration
+  audio.autoplay=false;
+  audio.preload='metadata';
 
   const node=AC.createMediaElementSource(audio);
   connectSource(node);
 
-  setStatus('Файл загружен — готов к записи'); // пересчитает HUD-отступ
+  setStatus('Файл загружен — готов к записи');
 }
 
 async function useMic(){
@@ -92,7 +89,7 @@ async function useMic(){
 }
 function stopMic(){ if(mediaStream){ for(const t of mediaStream.getTracks()) t.stop(); mediaStream=null; } }
 
-/* ========= Analysis: multi-band + features ========= */
+/* ========= Analysis ========= */
 const AENV = { sub:0, bass:0, lowmid:0, mid:0, highmid:0, treble:0, flux:0, centroid:0, rolloff:0, rms:0 };
 const prevSpec = { buf:null };
 function idxFor(freq, sr, n){ const nyq=sr/2; return Math.max(0, Math.min(n-1, Math.round(freq/nyq*n))); }
@@ -150,7 +147,7 @@ function analyze(){
   return AENV;
 }
 
-/* ========= Noise generators ========= */
+/* ========= Noise ========= */
 function makeNoise1D(rand){
   const n=5;
   const freq=[], amp=[], phase=[];
@@ -170,19 +167,21 @@ let NOISES=[];
 /* ========= Rendering ========= */
 function resize(){
   const r=canvas.getBoundingClientRect();
-  DPR=Math.max(1, Math.min(window.devicePixelRatio||1, 2.5));
-  W=Math.floor(r.width*DPR); H=Math.floor(r.height*DPR);
-  canvas.width=W; canvas.height=H;
+  DPR=Math.max(1, Math.min(window.devicePixelRatio||1, 3));
+  W = r.width;
+  H = r.height;
+  canvas.width  = Math.floor(W * DPR);
+  canvas.height = Math.floor(H * DPR);
   ctx.setTransform(DPR,0,0,DPR,0,0);
 }
 function clearSoft(fade){
   ctx.fillStyle=`rgba(0,0,0,${fade})`;
-  ctx.fillRect(0,0,canvas.width,canvas.height);
+  ctx.fillRect(0,0,W,H);
 }
 
 function drawLayer(i, baseY, ampK, rippleK, thickness, xDrift, parallax){
   const color=palette.waves[i%palette.waves.length] || '#fff';
-  const width=canvas.width, height=canvas.height;
+  const width=W, height=H;
   const steps=96;
   const dx=width/(steps-1);
 
@@ -219,7 +218,7 @@ function drawLayer(i, baseY, ampK, rippleK, thickness, xDrift, parallax){
   ctx.globalAlpha=1.0;
 }
 
-/* ========= Global Play/Pause ========= */
+/* ========= Playback ========= */
 async function setPlayback(paused){
   const btn=document.getElementById('btnPlayPause');
   if(paused){
@@ -253,16 +252,16 @@ async function ensurePlayingAudio(){
 function setStatus(t){
   const s=document.getElementById('status');
   if(s) s.textContent=t;
-  updateHudSpace();                          // важно: HUD может измениться по высоте
+  updateHudSpace();
 }
 
-/* ========= Seed/Theme ========= */
+/* ========= Theme ========= */
 function setTheme(name){
   const app=document.getElementById('app');
   app.setAttribute('data-theme', name);
   localStorage.setItem('organic_waves_theme', name);
   palette=PAL();
-  updateHudSpace();                          // важно: темы могут менять размеры HUD (шрифты/контраст)
+  updateHudSpace();
 }
 function generate(seedStr){
   const seed=hashStringToInt(seedStr);
@@ -272,7 +271,7 @@ function generate(seedStr){
   palette=PAL();
 }
 
-/* ========= Gentle Swell ========= */
+/* ========= Swell ========= */
 let swell=0;
 function triggerSwell(amount){ swell = Math.min(1.0, swell + amount); }
 
@@ -313,7 +312,7 @@ function tick(){
   if(env.flux > 0.9) triggerSwell((env.flux-0.9)*0.12);
   swell *= 0.94;
 
-  const baseY = canvas.height/2;
+  const baseY = H/2;
   drawLayer(3, baseY+90, ampK*0.9, rippleK*0.8, LSTATE[3].thickness+1.0, LSTATE[3].xDrift, LSTATE[3].parallax);
   drawLayer(2, baseY+30, ampK*0.8, rippleK*0.9, LSTATE[2].thickness+0.7, LSTATE[2].xDrift, LSTATE[2].parallax);
   drawLayer(1, baseY-10, ampK*0.7, rippleK*1.0, LSTATE[1].thickness+0.5, LSTATE[1].xDrift, LSTATE[1].parallax);
@@ -322,137 +321,50 @@ function tick(){
   rafId=requestAnimationFrame(tick);
 }
 
-/* ========= Recording (Canvas + Audio) ========= */
-let canvasStream=null;
-let recorder=null, recChunks=[], recActive=false;
-
-function getSupportedMime(){
-  const options=[
-    'video/webm;codecs=vp9,opus',
-    'video/webm;codecs=vp8,opus',
-    'video/webm;codecs=vp9',
-    'video/webm;codecs=vp8',
-    'video/webm'
-  ];
-  for(const m of options){ if(MediaRecorder.isTypeSupported(m)) return m; }
-  return '';
-}
-
-function getCombinedStream(){
-  if(!canvasStream) canvasStream = canvas.captureStream(30); // 30 FPS
-  const audioStream = destNode?.stream;
-  const tracks = [
-    ...canvasStream.getTracks(),
-    ...(audioStream ? audioStream.getTracks() : [])
-  ];
-  return new MediaStream(tracks);
-}
-function waitForMetadata(media){
-  if (media.readyState >= 1) return Promise.resolve();
-  return new Promise(res => media.addEventListener('loadedmetadata', res, { once:true }));
-}
-
-function armAutoStopFromMedia(media){
-  if (autoStopCleanup) { try{ autoStopCleanup(); }catch{} autoStopCleanup=null; }
-
-  const onEnded = () => { stopRecording(); };
-  const onEmptied = () => { stopRecording(); };
-
-  media.addEventListener('ended', onEnded, { once:true });
-  media.addEventListener('emptied', onEmptied, { once:true });
-
-  autoStopCleanup = () => {
-    media.removeEventListener('ended', onEnded);
-    media.removeEventListener('emptied', onEmptied);
-  };
-}
-
-function clearAutoStopGuards(){
-  if (recTimeoutId){ clearTimeout(recTimeoutId); recTimeoutId=null; }
-  if (autoStopCleanup){ try{ autoStopCleanup(); }catch{} autoStopCleanup=null; }
-}
+/* ========= Recording ========= */
+let rec=null, recChunks=[], recActive=false;
 
 async function startRecording(){
-  await ensurePlayingAudio();              // готовим аудиоконтекст/микрофон
-  if(!destNode){ setupAudio(); }
-  const mime = getSupportedMime();
-  const stream = getCombinedStream();
-
-  // Если источник — файл, стартуем строго здесь
-  if (activeAudio instanceof HTMLMediaElement){
-    try{
-      await waitForMetadata(activeAudio);
-    }catch{}
-    activeAudio.loop = false;              // временно убираем луп
-    activeAudio.currentTime = 0;           // берём с начала
-    armAutoStopFromMedia(activeAudio);     // автостоп по окончанию
-
-    // Страховочный таймер по длительности
-    if (isFinite(activeAudio.duration) && activeAudio.duration > 0){
-      const remainingMs = Math.max(0, (activeAudio.duration - activeAudio.currentTime) * 1000);
-      recTimeoutId = setTimeout(()=>{ stopRecording(); }, remainingMs + 350);
-    }
-  }
-
-  recChunks=[];
+  if(!destNode){ setStatus('Нет аудио для записи'); return; }
   try{
-    recorder = new MediaRecorder(stream, mime ? { mimeType: mime } : {});
+    rec = new MediaRecorder(destNode.stream, { mimeType: 'video/webm;codecs=vp9,opus' });
   }catch(e){
-    setStatus('MediaRecorder не поддерживается');
-    console.error(e);
-    clearAutoStopGuards();
-    return;
+    rec = new MediaRecorder(destNode.stream);
   }
-
-  recorder.ondataavailable = e=>{ if(e.data.size>0) recChunks.push(e.data); };
-  recorder.onstop = ()=>{
-    const type = mime || 'video/webm';
-    const blob = new Blob(recChunks, { type });
+  recChunks=[];
+  rec.ondataavailable = e=>{ if(e.data.size>0) recChunks.push(e.data); };
+  rec.onstop = ()=>{
+    const blob = new Blob(recChunks, { type: rec.mimeType });
     const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `organic_waves_${new Date().toISOString().replace(/[:.]/g,'-')}.webm`;
-    document.body.appendChild(a); a.click(); a.remove();
-    URL.revokeObjectURL(url);
-    if (activeAudio instanceof HTMLMediaElement){ activeAudio.loop = true; }
+
+    // создаём ссылку для скачивания mp4/webm
+    const a=document.createElement('a');
+    a.href=url;
+    a.download='recording.webm';
+    a.click();
+
     setStatus('Запись сохранена');
+    recActive=false;
+    document.getElementById('btnRec').textContent='⏺ Запись';
   };
 
-  // Важно: сначала стартуем рекордер, затем play()
-  recorder.start();
-
-  if (activeAudio instanceof HTMLMediaElement){
-    try{ await activeAudio.play(); }catch(e){ console.warn(e); }
-  }
-
+  rec.start();
   recActive=true;
-  document.getElementById('btnRec').textContent='■ Стоп';
-  setStatus('Запись идёт…');
+  document.getElementById('btnRec').textContent='⏹ Стоп';
+  setStatus('Запись начата');
 }
 
 function stopRecording(){
-  clearAutoStopGuards(); // всегда снимаем таймер/слушатели
-
-  if(recorder && recActive){
-    recActive=false;
-    try{ recorder.stop(); }catch(e){ console.warn(e); }
-    document.getElementById('btnRec').textContent='⏺ Запись';
-    setStatus('Запись сохраняется…');
-  }
+  if(rec && rec.state!=='inactive'){ rec.stop(); }
 }
 
-/* === HUD spacer: реальный отступ под тулбар === */
+
+/* === HUD spacer === */
 function updateHudSpace(){
   const hud = document.querySelector('.hud');
   const h = hud ? hud.offsetHeight : 0;
-  document.documentElement.style.setProperty('--hud-space', (h - 40) + 'px'); // 40px зазор
+  document.documentElement.style.setProperty('--hud-space', (h + 40) + 'px');
 }
-window.addEventListener('resize', updateHudSpace);
-const hudEl = document.querySelector('.hud');
-if (window.ResizeObserver && hudEl){
-  new ResizeObserver(()=>updateHudSpace()).observe(hudEl);
-}
-updateHudSpace();
 
 /* ========= Init ========= */
 (function(){
@@ -476,7 +388,7 @@ updateHudSpace();
   };
   const s=seedFromHash(); location.hash=s; generate(s);
 
-  ctx.fillStyle=PAL().bg; ctx.fillRect(0,0,canvas.width,canvas.height);
+  ctx.fillStyle=PAL().bg; ctx.fillRect(0,0,W,H);
 
   document.getElementById('fileInput').addEventListener('change', e=>{
     const f=e.target.files[0]; if(!f) return; useFile(f);
@@ -485,7 +397,6 @@ updateHudSpace();
   document.getElementById('btnPlayPause').addEventListener('click', async ()=>{
     await setPlayback(running);
   });
-
   document.getElementById('btnRec').addEventListener('click', async ()=>{
     if(!recActive){ await startRecording(); }
     else{ stopRecording(); }
