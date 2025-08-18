@@ -37,7 +37,7 @@
     <section class="hero">
       <div class="bg-grad" aria-hidden="true"></div>
 
-      <div class="canvas-wrap">
+      <div class="canvas-wrap" id="canvasWrap">
         <canvas id="cnv" width="1600" height="900" aria-label="Organic Waves — Pop/Rock"></canvas>
       </div>
 
@@ -56,6 +56,14 @@
           <label><input type="radio" name="style" value="pop" checked> Pop</label>
           <label><input type="radio" name="style" value="rock"> Rock</label>
         </div>
+
+        <div class="pill" role="group" aria-label="Формат видео">
+        <span class="small">Формат:</span>
+        <label><input type="radio" name="aspect" value="landscape" checked> 16:9</label>
+        <label><input type="radio" name="aspect" value="portrait"> 9:16</label>
+        <label><input type="radio" name="aspect" value="square"> 1:1</label>
+      </div>
+
 
         <button class="btn success" id="btnRec" title="Запись видео с аудио">⏺ Запись</button>
         <span class="small" id="status">Нет аудио</span>

@@ -16,6 +16,38 @@ const PAL=()=>{
 
 /* ========= Canvas / Scene ========= */
 let canvas, ctx, DPR=1, W=1600, H=900, running=true;
+/* ========= Aspect / Presets ========= */
+const ASPECTS = {
+  landscape: { w: 1920, h: 1080, ar: '16/9' },   // YouTube / Desktop
+  portrait:  { w: 1080, h: 1920, ar: '9/16' },   // TikTok / Reels / Shorts
+  square:    { w: 1080, h: 1080, ar: '1/1' }     // Универсал
+};
+let CURRENT_PRESET = 'landscape';
+
+function applyCanvasPreset(presetName){
+  const p = ASPECTS[presetName] || ASPECTS.landscape;
+  CURRENT_PRESET = presetName;
+
+  // 1) Жёстко задаём внутреннее разрешение для РЕКОРДИНГА
+  canvas.width  = p.w;
+  canvas.height = p.h;
+  W = p.w; H = p.h;
+
+  // 2) Визуальный размер — через aspect-ratio обёртки
+  const wrap = document.getElementById('canvasWrap');
+  if (wrap){
+    wrap.style.setProperty('--ar', p.ar);
+  }
+
+  // 3) Логическая матрица — 1:1, без DPR-скейла: СМИКС для стрима = пиксели канвы
+  DPR = 1;
+  ctx.setTransform(1,0,0,1,0,0);
+
+  // 4) Сообщим статус
+  setStatus(`Формат: ${presetName} (${p.w}×${p.h})`);
+  updateHudSpace();
+}
+
 let seedRand, hue=0, palette=null;
 const layers = [
   { amp: 40, speed: 0.35 },
@@ -285,17 +317,18 @@ function rngFrom(x){ // детерминированный "шум" для edge 
 
 /* ========= Rendering ========= */
 function resize(){
-  const r=canvas.getBoundingClientRect();
-  DPR=Math.max(1, Math.min(window.devicePixelRatio||1, 3));
-  W = r.width;
-  H = r.height;
-  canvas.width  = Math.floor(W * DPR);
-  canvas.height = Math.floor(H * DPR);
-  ctx.setTransform(DPR,0,0,DPR,0,0);
+  if (!window.canvas || !window.ctx) return;
+  // просто актуализируем логические размеры и сбрасываем матрицу
+  window.W = canvas.width;
+  window.H = canvas.height;
+  window.DPR = 1;
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
 }
+
 function clearSoft(fade){
-  ctx.fillStyle=`rgba(0,0,0,${fade})`;
-  ctx.fillRect(0,0,W,H);
+  if (!window.ctx) return;
+  ctx.fillStyle = `rgba(0,0,0,${fade})`;
+  ctx.fillRect(0, 0, W, H);
 }
 
 function drawLayerPop(i, baseY, ampK, rippleK, thickness, xDrift, parallax){
@@ -765,9 +798,30 @@ function updateHudSpace(){
 
 /* ========= Init ========= */
 (function(){
-  canvas=document.getElementById('cnv');
-  ctx=canvas.getContext('2d', { alpha:false });
-  resize(); window.addEventListener('resize', resize);
+  canvas = document.getElementById('cnv');
+  ctx    = canvas.getContext('2d', { alpha:false });
+
+  // 1) сначала применяем пресет (чтобы холст сразу стал нужного размера)
+  const savedAspect = localStorage.getItem('ow_aspect') || 'landscape';
+  applyCanvasPreset(savedAspect);
+    // отметить текущую радиокнопку формата
+  document.querySelectorAll('input[name="aspect"]').forEach(r=>{
+    r.checked = (r.value === savedAspect);
+  });
+
+
+  // 2) затем синхронизируем и вешаем ресайз
+  resize();
+  window.addEventListener('resize', resize);
+
+  // Слушатели на радиокнопки формата
+  document.querySelectorAll('input[name="aspect"]').forEach(r=>{
+    r.addEventListener('change', e=>{
+      const v = e.target.value;
+      applyCanvasPreset(v);
+      localStorage.setItem('ow_aspect', v);
+    });
+  });
 
   const savedTheme=localStorage.getItem('organic_waves_theme');
   if(savedTheme){
